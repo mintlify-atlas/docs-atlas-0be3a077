@@ -1,0 +1,105 @@
+{
+  "projectType": "data-platform",
+  "projectName": "ValKeyper",
+  "projectDescription": "An in-memory key-value store written in Go that replicates core Redis functionalities with persistence, replication, streams, and transactions.",
+  "theme": "aspen",
+  "primaryColor": "#fbc926",
+  "lightColor": "#8c73fa",
+  "darkColor": null,
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Documentation",
+        "groups": [
+          {
+            "group": "Getting Started",
+            "pages": [
+              "introduction",
+              "quickstart",
+              "installation"
+            ]
+          },
+          {
+            "group": "Core Concepts",
+            "pages": [
+              "concepts/architecture",
+              "concepts/resp-protocol",
+              "concepts/data-model"
+            ]
+          },
+          {
+            "group": "Commands",
+            "pages": [
+              "commands/overview",
+              "commands/string-commands",
+              "commands/key-management",
+              "commands/stream-commands",
+              "commands/transaction-commands"
+            ]
+          },
+          {
+            "group": "Operations",
+            "pages": [
+              "operations/replication",
+              "operations/persistence",
+              "operations/configuration"
+            ]
+          },
+          {
+            "group": "Advanced",
+            "pages": [
+              "advanced/streams",
+              "advanced/transactions",
+              "advanced/expiry"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "API Reference",
+        "groups": [
+          {
+            "group": "Go Packages",
+            "pages": [
+              "api/store",
+              "api/resp-parser",
+              "api/rdb"
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "keyFeatures": [
+    "In-memory key-value store with Redis compatibility",
+    "RDB persistence for data durability",
+    "Master-slave replication for high availability",
+    "Event-driven streams for real-time data flows",
+    "ACID transactions with MULTI/EXEC",
+    "Key expiration with TTL support",
+    "RESP protocol implementation",
+    "Compatible with redis-cli"
+  ],
+  "publicApiSurface": [
+    "SET key value [PX milliseconds]",
+    "GET key",
+    "DEL key",
+    "INCR key",
+    "EXPIRE key seconds",
+    "XADD stream ID field value [field value ...]",
+    "XRANGE stream start end",
+    "XREAD [BLOCK milliseconds] STREAMS key [key ...] ID [ID ...]",
+    "MULTI",
+    "EXEC",
+    "DISCARD",
+    "PING",
+    "ECHO message",
+    "CONFIG GET parameter",
+    "KEYS pattern",
+    "INFO [section]",
+    "TYPE key",
+    "REPLCONF",
+    "PSYNC replicationid offset",
+    "WAIT numreplicas timeout"
+  ]
+}
