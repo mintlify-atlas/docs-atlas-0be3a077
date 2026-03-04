@@ -1,0 +1,384 @@
+---
+title: 'Key Expiry'
+description: 'Understanding ValKeyper TTL mechanism and expiry management'
+---
+
+## Overview
+
+ValKeyper implements automatic key expiration using Go's time-based channels and goroutines. When a key is set with a TTL (Time To Live), a background goroutine monitors the expiration and automatically removes the key from the store when the TTL expires.
+
+## Expiry Data Structures
+
+The expiry system uses two key components:
+
+```go
+type KVStore struct {
+    store     map[string]string      // Main key-value storage
+    expiryMap map[string]chan int    // Expiry control channels
+    // ...
+}
+```
+
+### Fields
+
+- **`store`**: Main in-memory map holding key-value pairs
+- **`expiryMap`**: Maps each key with TTL to a control channel
+  - Key: The store key (string)
+  - Value: Channel to signal expiry cancellation
+
+## Setting Keys with Expiry
+
+The `Set` method handles key creation with optional TTL:
+
+```go
+func (kv *KVStore) Set(key, value string, expiry int) {
+    if expiry != -1 {
+        timeout := time.After(time.Duration(expiry) * time.Millisecond)
+        go kv.handleExpiry(timeout, key)
+    }
+    
+    kv.store[key] = value
+}
+```
+
+### Flow
+
+1. **Check Expiry**: If `expiry != -1`, TTL is enabled
+2. **Create Timeout**: Convert milliseconds to `time.Duration`
+3. **Launch Goroutine**: Spawn `handleExpiry` in background
+4. **Store Value**: Write key-value to store (synchronous)
+
+### Usage via SET Command
+
+```bash
+SET key value PX milliseconds
+```
+
+Implementation in `processCommand`:
+
+```go
+case "SET":
+    key := buff[1]
+    val := buff[2]
+    ex := -1
+    if len(buff) > 4 {
+        ex, err = strconv.Atoi(buff[4])
+        if err != nil {
+            panic(err)
+        }
+    }
+    kv.Set(key, val, ex)
+    res = []byte("+OK\r\n")
+```
+
+### Example
+
+```bash
+# Set key with 5000ms (5 second) expiry
+> SET session:abc token123 PX 5000
++OK
+
+# Key exists immediately
+> GET session:abc
+"token123"
+
+# After 5 seconds, key is automatically deleted
+> GET session:abc
+$-1
+```
+
+## The handleExpiry Goroutine
+
+The core expiry mechanism is implemented in the `handleExpiry` method:
+
+```go
+func (kv *KVStore) handleExpiry(timeout <-chan time.Time, key string) {
+    closeCh := make(chan int)
+    kv.expiryMap[key] = closeCh
+    for {
+        select {
+        case <-closeCh:
+            return
+        case <-timeout:
+            delete(kv.store, key)
+        }
+    }
+}
+```
+
+### Goroutine Lifecycle
+
+1. **Channel Creation**
+   ```go
+   closeCh := make(chan int)
+   kv.expiryMap[key] = closeCh
+   ```
+   - Creates unbuffered channel for cancellation signals
+   - Stores channel in `expiryMap` for external access
+
+2. **Event Loop**
+   ```go
+   for {
+       select {
+       case <-closeCh:
+           return
+       case <-timeout:
+           delete(kv.store, key)
+       }
+   }
+   ```
+   - **`closeCh` receives**: Goroutine exits (early cancellation)
+   - **`timeout` receives**: Delete key and continue (TTL expired)
+
+3. **Goroutine Termination**
+   - Expires naturally when timeout fires (one-time delete)
+   - Exits early if cancellation signal received
+
+<Note>
+After the timeout fires and the key is deleted, the goroutine continues looping. However, since `timeout` is a one-time channel created by `time.After()`, it will never fire again. The goroutine effectively waits indefinitely on `closeCh` unless signaled.
+</Note>
+
+## Expiry Cancellation
+
+Keys can be deleted manually before expiry using the DEL command:
+
+```go
+case "DEL":
+    key := buff[1]
+    _, ok := kv.store[key]
+    if !ok {
+        res = []byte(":0\r\n")
+        break switchLoop
+    }
+    delete(kv.store, key)
+    
+    ch, ok := kv.expiryMap[key]
+    if ok {
+        ch <- 1  // Signal goroutine to exit
+    }
+    
+    res = []byte(":1\r\n")
+```
+
+### Cancellation Flow
+
+1. **Check Existence**: Verify key exists in store
+2. **Delete from Store**: Remove key-value pair
+3. **Lookup Channel**: Check if key has expiry goroutine
+4. **Signal Goroutine**: Send value to `closeCh`
+5. **Goroutine Exits**: Receives signal and returns
+
+### Example
+
+```bash
+# Set key with 60 second expiry
+> SET temp:data value PX 60000
++OK
+
+# Delete before expiry
+> DEL temp:data
+:1
+
+# Expiry goroutine has been terminated
+```
+
+## Loading Expiry from RDB
+
+When loading persisted data, ValKeyper recalculates remaining TTL:
+
+```go
+func (kv *KVStore) LoadFromRDB(rdb *rdb.RDB) {
+    if len(rdb.Dbs) < 1 {
+        return
+    }
+    kv.store = rdb.Dbs[0].DbStore
+    
+    for _, x := range rdb.Dbs[0].ExpiryStore {
+        kv.store[x.Key] = x.Value
+        duration := time.Duration(int64(x.Expiry)-time.Now().UnixMilli()) * time.Millisecond
+        go kv.handleExpiry(time.After(duration), x.Key)
+    }
+}
+```
+
+### RDB Expiry Restoration
+
+1. **Load Regular Keys**: Copy `DbStore` to in-memory store
+2. **Process Expiry Keys**: Iterate `ExpiryStore`
+3. **Calculate Remaining TTL**:
+   ```go
+   duration = (stored_expiry_time - current_time)
+   ```
+4. **Launch Goroutines**: Start `handleExpiry` with remaining duration
+
+### Time-Based Expiry
+
+RDB stores absolute expiry timestamps (Unix milliseconds). ValKeyper:
+- Subtracts current time to get remaining duration
+- Handles already-expired keys (negative duration)
+
+<Warning>
+If a key's expiry timestamp is in the past when loading from RDB, `time.After()` with a negative duration will fire immediately, deleting the key.
+</Warning>
+
+## Expiry Precision
+
+ValKeyper uses millisecond precision for all expiry operations:
+
+```go
+timeout := time.After(time.Duration(expiry) * time.Millisecond)
+```
+
+### Timing Characteristics
+
+- **Resolution**: Milliseconds
+- **Mechanism**: Go's `time.After()` timer
+- **Accuracy**: Subject to Go scheduler and system timer precision
+- **Guarantee**: Key expires **at or shortly after** the specified time
+
+<Tip>
+Go's timer accuracy is typically within a few milliseconds on modern systems, but is not guaranteed to be exact. Keys may expire slightly after the specified TTL.
+</Tip>
+
+## Memory Management
+
+The expiry system has memory implications:
+
+### Per-Key Overhead
+
+```go
+// For each key with TTL:
+closeCh := make(chan int)           // Channel: ~96 bytes
+kv.expiryMap[key] = closeCh         // Map entry: ~32 bytes
+go kv.handleExpiry(...)             // Goroutine stack: ~2KB minimum
+```
+
+**Estimated overhead per expiring key**: ~2-4 KB
+
+### Goroutine Cleanup
+
+<Warning>
+After a key expires naturally, its goroutine continues running indefinitely, waiting on the close channel. This is a potential goroutine leak.
+</Warning>
+
+Mitigation strategies:
+1. Always use DEL to explicitly remove keys
+2. Let natural expiry happen for short-lived keys
+3. Monitor goroutine count in production
+
+## Edge Cases and Behaviors
+
+### Overwriting Keys with TTL
+
+Setting a new value for an existing key with TTL:
+
+```bash
+> SET key1 value1 PX 10000
++OK
+> SET key1 value2 PX 5000  # New TTL
++OK
+```
+
+**Behavior**:
+- New `handleExpiry` goroutine is launched
+- Old goroutine continues running (not terminated)
+- **Result**: Goroutine leak accumulates
+
+<Warning>
+Repeated SET operations on the same key with TTL will spawn multiple expiry goroutines without cleaning up old ones.
+</Warning>
+
+### Setting Key Without TTL
+
+Removing TTL from an existing key:
+
+```bash
+> SET key value PX 10000
++OK
+> SET key newvalue  # No expiry
++OK
+```
+
+**Behavior**:
+- Key is updated in store
+- Old expiry goroutine still runs
+- When old TTL expires, key is deleted unexpectedly
+
+<Warning>
+ValKeyper does not cancel existing expiry when overwriting with a key without TTL. The original expiry remains active.
+</Warning>
+
+### Zero or Negative Expiry
+
+```bash
+> SET key value PX 0
+```
+
+**Behavior**:
+- `time.After(0)` fires immediately
+- Key is deleted almost instantly after being set
+
+## Best Practices
+
+<CardGroup cols={2}>
+  <Card title="Use DEL for Early Removal" icon="trash">
+    Always use DEL to remove keys before expiry to properly clean up goroutines.
+  </Card>
+  
+  <Card title="Avoid Frequent Overwrites" icon="arrows-rotate">
+    Minimize repeated SET operations on the same key with TTL to prevent goroutine leaks.
+  </Card>
+  
+  <Card title="Monitor Memory" icon="memory">
+    Track memory usage and goroutine count when using many expiring keys.
+  </Card>
+  
+  <Card title="Millisecond Precision" icon="stopwatch">
+    Use millisecond values (PX) for precise expiry control.
+  </Card>
+</CardGroup>
+
+## Common Patterns
+
+### Session Management
+
+```bash
+# Create session with 30-minute expiry
+SET session:user123 {"user_id": 123} PX 1800000
+
+# Extend session on activity
+SET session:user123 {"user_id": 123} PX 1800000
+
+# Logout (explicit cleanup)
+DEL session:user123
+```
+
+### Cache with TTL
+
+```bash
+# Cache API response for 5 minutes
+SET cache:api:/users/123 {"name":"Alice"} PX 300000
+
+# Invalidate cache early
+DEL cache:api:/users/123
+```
+
+### Rate Limiting
+
+```bash
+# Allow 100 requests per minute
+SET rate:ip:192.168.1.1 0 PX 60000
+INCR rate:ip:192.168.1.1
+# Check if count < 100
+```
+
+## Implementation Reference
+
+Key source locations in `store.go`:
+
+- **KVStore struct**: Lines 43-51
+- **Set method**: Lines 53-62
+- **handleExpiry goroutine**: Lines 94-105
+- **DEL cancellation**: Lines 193-208
+- **RDB loading**: Lines 81-92
+- **SET command parsing**: Lines 209-220

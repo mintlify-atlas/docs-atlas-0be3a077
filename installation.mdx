@@ -1,0 +1,353 @@
+---
+title: 'Installation'
+description: 'Build and configure ValKeyper from source'
+icon: 'download'
+---
+
+This guide covers everything you need to know about installing, building, and configuring ValKeyper.
+
+## System Requirements
+
+<CardGroup cols={2}>
+  <Card title="Go Version" icon="code">
+    **Go 1.22 or later** is required to build ValKeyper
+  </Card>
+
+  <Card title="Operating System" icon="computer">
+    Linux, macOS, or Windows (with WSL recommended)
+  </Card>
+
+  <Card title="Memory" icon="microchip">
+    Minimum 512 MB RAM (more for production workloads)
+  </Card>
+
+  <Card title="Network" icon="network-wired">
+    Port 6379 (default) or custom port availability
+  </Card>
+</CardGroup>
+
+## Building from Source
+
+<Steps>
+  <Step title="Install Go">
+    If you don't have Go installed, download it from [golang.org](https://golang.org/dl/):
+
+    ```bash
+    # Verify Go installation
+    go version
+    # Should output: go version go1.22 or later
+    ```
+  </Step>
+
+  <Step title="Clone the repository">
+    ```bash
+    git clone https://github.com/vansh845/valkeyper.git
+    cd valkeyper
+    ```
+  </Step>
+
+  <Step title="Install dependencies">
+    ValKeyper uses minimal dependencies. Download them using:
+
+    ```bash
+    go mod download
+    ```
+
+    **Dependencies:**
+    - `github.com/libp2p/go-reuseport` - Socket reuse for better performance
+    - Standard Go libraries
+  </Step>
+
+  <Step title="Build the binary">
+    Build ValKeyper with:
+
+    ```bash
+    go build -o valkeyper
+    ```
+
+    For optimized production builds:
+
+    ```bash
+    go build -ldflags="-s -w" -o valkeyper
+    ```
+
+    This reduces the binary size by stripping debug information.
+  </Step>
+
+  <Step title="Verify the build">
+    Test the binary:
+
+    ```bash
+    ./valkeyper --help
+    ```
+  </Step>
+</Steps>
+
+## Installation Methods
+
+<Tabs>
+  <Tab title="Local Development">
+    For local development, simply build and run from the project directory:
+
+    ```bash
+    go build
+    ./valkeyper
+    ```
+  </Tab>
+
+  <Tab title="System-wide Installation">
+    Install ValKeyper to your `$GOPATH/bin`:
+
+    ```bash
+    go install
+    ```
+
+    Ensure `$GOPATH/bin` is in your `PATH`:
+
+    ```bash
+    export PATH=$PATH:$(go env GOPATH)/bin
+    valkeyper
+    ```
+  </Tab>
+
+  <Tab title="Custom Location">
+    Build and move to a custom location:
+
+    ```bash
+    go build -o valkeyper
+    sudo mv valkeyper /usr/local/bin/
+    valkeyper
+    ```
+  </Tab>
+</Tabs>
+
+## Configuration Options
+
+ValKeyper supports command-line flags for configuration:
+
+### Port Configuration
+
+Run ValKeyper on a specific port:
+
+```bash
+./valkeyper --port 6380
+```
+
+**Default:** `6379` (standard Redis port)
+
+### Persistence Configuration
+
+Configure RDB persistence for loading data from disk:
+
+```bash
+./valkeyper --dir /tmp/redis-files --dbfilename dump.rdb
+```
+
+<ParamField path="--dir" type="string">
+  Directory where RDB files are stored
+</ParamField>
+
+<ParamField path="--dbfilename" type="string">
+  Name of the RDB file to load on startup
+</ParamField>
+
+<Note>
+  ValKeyper currently supports **loading** RDB files but does not automatically create snapshots. This feature is planned for future releases.
+</Note>
+
+### Replication Configuration
+
+Configure ValKeyper as a replica (slave) node:
+
+```bash
+./valkeyper --port 6380 --replicaof "127.0.0.1 6379"
+```
+
+<ParamField path="--replicaof" type="string">
+  Master server address in format `"IP PORT"`
+</ParamField>
+
+## Configuration File
+
+ValKeyper includes a basic `redis.conf` configuration file:
+
+```conf
+dir /tmp/redis-files
+dbfilename dump.rdb
+```
+
+<Warning>
+  The configuration file is currently used for reference. Command-line flags take precedence.
+</Warning>
+
+## Complete Configuration Example
+
+Here's a complete example with all options:
+
+<CodeGroup>
+
+```bash Master Node
+# Start as master on port 6379 with persistence
+./valkeyper \
+  --port 6379 \
+  --dir /var/lib/valkeyper \
+  --dbfilename dump.rdb
+```
+
+```bash Replica Node
+# Start as replica on port 6380
+./valkeyper \
+  --port 6380 \
+  --replicaof "127.0.0.1 6379" \
+  --dir /var/lib/valkeyper \
+  --dbfilename replica_dump.rdb
+```
+
+</CodeGroup>
+
+## Runtime Information
+
+Query server configuration and status using the `CONFIG` and `INFO` commands:
+
+```bash
+# Get configured directory
+CONFIG GET dir
+
+# Get database filename
+CONFIG GET dbfilename
+
+# Get server info
+INFO
+# Returns:
+# role:master
+# master_replid:8371b4fb1155b71f4a04d3e1bc3e18c4a990aeeb
+# master_repl_offset:0
+```
+
+## Troubleshooting
+
+<AccordionGroup>
+  <Accordion title="Port already in use">
+    If port 6379 is already in use:
+
+    ```bash
+    # Check what's using the port
+    lsof -i :6379
+
+    # Use a different port
+    ./valkeyper --port 6380
+    ```
+  </Accordion>
+
+  <Accordion title="Build errors">
+    Ensure you have Go 1.22 or later:
+
+    ```bash
+    go version
+    ```
+
+    Clean the build cache and rebuild:
+
+    ```bash
+    go clean -cache
+    go build
+    ```
+  </Accordion>
+
+  <Accordion title="RDB file not loading">
+    Verify the file path and permissions:
+
+    ```bash
+    # Check if file exists
+    ls -l /tmp/redis-files/dump.rdb
+
+    # Ensure read permissions
+    chmod 644 /tmp/redis-files/dump.rdb
+    ```
+
+    Check the server output for RDB parsing errors.
+  </Accordion>
+
+  <Accordion title="Replication not working">
+    Ensure the master is reachable:
+
+    ```bash
+    # Test connectivity
+    telnet 127.0.0.1 6379
+    ```
+
+    Verify the master is running:
+
+    ```bash
+    redis-cli -p 6379 PING
+    ```
+  </Accordion>
+</AccordionGroup>
+
+## Building for Production
+
+For production deployments, build with optimizations:
+
+```bash
+# Build optimized binary
+CGO_ENABLED=0 go build -ldflags="-s -w" -o valkeyper
+
+# Create dedicated user (Linux)
+sudo useradd -r -s /bin/false valkeyper
+
+# Create data directory
+sudo mkdir -p /var/lib/valkeyper
+sudo chown valkeyper:valkeyper /var/lib/valkeyper
+
+# Run as service user
+sudo -u valkeyper ./valkeyper --dir /var/lib/valkeyper
+```
+
+<Note>
+  Consider using a process manager like `systemd` or `supervisord` to manage the ValKeyper process in production.
+</Note>
+
+## Source Code Architecture
+
+ValKeyper is organized into several key modules:
+
+```
+valkeyper/
+├── app/
+│   ├── server.go       # Main server entry point
+│   ├── store/
+│   │   └── store.go    # Core key-value store implementation
+│   ├── resp/
+│   │   └── parser.go   # RESP protocol parser
+│   └── rdb/
+│       └── rdb.go      # RDB file format parser
+├── go.mod              # Go module definition
+└── redis.conf          # Configuration reference
+```
+
+**Key Components:**
+
+- **store.go** - In-memory storage, command processing, replication, transactions
+- **parser.go** - Redis RESP protocol encoding/decoding  
+- **rdb.go** - RDB persistence format parsing
+- **server.go** - TCP server and connection handling
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Quickstart" icon="rocket" href="/quickstart">
+    Start using ValKeyper with basic commands
+  </Card>
+
+  <Card title="Replication Setup" icon="copy">
+    Configure master-slave replication
+  </Card>
+
+  <Card title="Persistence" icon="floppy-disk">
+    Learn about RDB file format and data persistence
+  </Card>
+
+  <Card title="API Reference" icon="code">
+    Explore all supported commands
+  </Card>
+</CardGroup>

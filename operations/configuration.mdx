@@ -1,0 +1,430 @@
+---
+title: 'Configuration'
+description: 'Command-line configuration options for ValKeyper'
+icon: 'sliders'
+---
+
+## Overview
+
+ValKeyper is configured entirely through command-line flags. Unlike Redis, there is no configuration file support - all settings are passed as arguments when starting the server.
+
+## Command-Line Flag Parsing
+
+Flags are parsed at startup using a custom parser that looks for `--` prefixed arguments:
+
+```go
+func (kv *KVStore) ParseCommandLine() {
+    flags := make(map[string]string)
+    
+    for i := 1; i < len(os.Args); i++ {
+        if os.Args[i][:2] == "--" {
+            flags[os.Args[i][2:]] = os.Args[i+1]
+            i++  // Skip the value
+        }
+    }
+}
+```
+
+**Source:** `store.go:640-649`
+
+Flags are stored in a map and can be retrieved using the CONFIG GET command.
+
+## Available Flags
+
+### --port
+
+Specifies the TCP port on which ValKeyper listens for client connections.
+
+<ParamField path="--port" type="string" default="6379">
+  The port number for the ValKeyper server
+</ParamField>
+
+**Example:**
+```bash
+./your_program.sh --port 7000
+```
+
+**Source:** `store.go:650-653`
+
+```go
+port, ok := flags["port"]
+if ok {
+    kv.Info.Port = port
+}
+```
+
+The server binds to `0.0.0.0` on the specified port:
+
+```go
+addr := fmt.Sprintf("0.0.0.0:%s", kvStore.Info.Port)
+l, err := net.Listen("tcp", addr)
+```
+
+**Source:** `server.go:24-30`
+
+### --replicaof
+
+Configures the instance as a slave and specifies the master to replicate from.
+
+<ParamField path="--replicaof" type="string">
+  Master address in the format `"<ip> <port>"` (space-separated)
+</ParamField>
+
+**Example:**
+```bash
+./your_program.sh --port 6380 --replicaof "127.0.0.1 6379"
+```
+
+**Source:** `store.go:654-659`
+
+```go
+replicaof, ok := flags["replicaof"]
+if ok {
+    kv.Info.Role = "slave"
+    kv.Info.MasterIP = strings.Split(replicaof, " ")[0]
+    kv.Info.MasterPort = strings.Split(replicaof, " ")[1]
+}
+```
+
+<Note>
+The value must be a **single quoted string** with space-separated IP and port: `"192.168.1.100 6379"`
+</Note>
+
+When configured as a slave, ValKeyper automatically initiates replication:
+
+```go
+if kvStore.Info.Role == "slave" {
+    fmt.Println("connecting to master by slave node")
+    kvStore.HandleReplication()
+}
+```
+
+**Source:** `server.go:19-22`
+
+### --dir
+
+Specifies the directory where RDB persistence files are stored.
+
+<ParamField path="--dir" type="string">
+  Directory path for RDB file storage
+</ParamField>
+
+**Example:**
+```bash
+./your_program.sh --dir /var/lib/valkeyper
+```
+
+**Source:** `store.go:661-677`
+
+<Warning>
+The `--dir` flag has no effect unless paired with `--dbfilename`. Both must be provided for persistence.
+</Warning>
+
+### --dbfilename
+
+Specifies the name of the RDB file to load on startup.
+
+<ParamField path="--dbfilename" type="string">
+  Filename of the RDB snapshot (typically `dump.rdb`)
+</ParamField>
+
+**Example:**
+```bash
+./your_program.sh --dir /data --dbfilename backup.rdb
+```
+
+**Source:** `store.go:661-677`
+
+```go
+dir, ok1 := flags["dir"]
+dbfile, ok2 := flags["dbfilename"]
+
+if ok1 && ok2 {
+    rdb, err := rdb.NewRDB(path.Join(dir, dbfile))
+    if err == nil {
+        err = rdb.Parse()
+        kv.LoadFromRDB(rdb)
+    } else {
+        fmt.Println(err)
+    }
+}
+```
+
+If the file doesn't exist or parsing fails, ValKeyper starts with an empty dataset.
+
+## Default Values
+
+When flags are not provided, ValKeyper uses these defaults:
+
+```go
+func New() *KVStore {
+    return &KVStore{
+        Info: Info{
+            Role:             "master",
+            MasterReplId:     "8371b4fb1155b71f4a04d3e1bc3e18c4a990aeeb",
+            MasterReplOffSet: 0,
+            Port:             "6379",
+        },
+        // ...
+    }
+}
+```
+
+**Source:** `store.go:64-79`
+
+| Setting | Default Value |
+|---------|---------------|
+| Port | `6379` |
+| Role | `master` |
+| Replication ID | `8371b4fb1155b71f4a04d3e1bc3e18c4a990aeeb` |
+| Replication Offset | `0` |
+
+## CONFIG GET Command
+
+Retrieve configuration values at runtime using the CONFIG GET command:
+
+```bash
+redis-cli CONFIG GET port
+# Returns: ["port", "6379"]
+
+redis-cli CONFIG GET dir
+# Returns: ["dir", "/var/lib/valkeyper"]
+```
+
+**Implementation:**
+
+```go
+case "CONFIG":
+    if len(buff) > 2 && buff[1] == "GET" {
+        key := buff[2]
+        val, ok := kv.Info.flags[key]
+        if ok {
+            res = resp.ToArray([]string{key, val})
+        }
+    }
+```
+
+**Source:** `store.go:229-238`
+
+The response is a RESP array containing the key and value.
+
+## Configuration Examples
+
+### Basic Master Setup
+
+Start a standalone master on the default port:
+
+```bash
+./your_program.sh
+```
+
+This is equivalent to:
+```bash
+./your_program.sh --port 6379
+```
+
+### Master with Persistence
+
+Start a master with RDB persistence:
+
+```bash
+./your_program.sh --port 6379 --dir /data --dbfilename dump.rdb
+```
+
+### Slave Configuration
+
+Start a slave replicating from a remote master:
+
+```bash
+./your_program.sh --port 6380 --replicaof "192.168.1.100 6379"
+```
+
+### Slave with Persistence
+
+Combine replication and persistence:
+
+```bash
+./your_program.sh \
+  --port 6380 \
+  --replicaof "192.168.1.100 6379" \
+  --dir /data \
+  --dbfilename slave_backup.rdb
+```
+
+## Internal Configuration Store
+
+Configuration flags are stored in the `Info` struct:
+
+```go
+type Info struct {
+    Role             string
+    MasterIP         string
+    MasterPort       string
+    MasterReplId     string
+    MasterReplOffSet int
+    MasterConn       net.Conn
+    slaves           []net.Conn
+    Port             string
+    flags            map[string]string  // Raw command-line flags
+}
+```
+
+**Source:** `store.go:26-36`
+
+The `flags` map stores all parsed command-line arguments and is used by CONFIG GET.
+
+## Server Startup Sequence
+
+<Steps>
+  <Step title="Initialize Store">
+    Create a new KVStore with default values:
+    ```go
+    kvStore := store.New()
+    ```
+    **Source:** `server.go:14`
+  </Step>
+  
+  <Step title="Parse Flags">
+    Process command-line arguments:
+    ```go
+    kvStore.ParseCommandLine()
+    ```
+    **Source:** `server.go:15`
+  </Step>
+  
+  <Step title="Load RDB (if configured)">
+    If `--dir` and `--dbfilename` are set, load the RDB file.
+    
+    **Source:** `store.go:661-677`
+  </Step>
+  
+  <Step title="Initiate Replication (if slave)">
+    If `--replicaof` is set, connect to the master:
+    ```go
+    if kvStore.Info.Role == "slave" {
+        kvStore.HandleReplication()
+    }
+    ```
+    **Source:** `server.go:19-22`
+  </Step>
+  
+  <Step title="Bind to Port">
+    Start listening for client connections:
+    ```go
+    addr := fmt.Sprintf("0.0.0.0:%s", kvStore.Info.Port)
+    l, err := net.Listen("tcp", addr)
+    ```
+    **Source:** `server.go:24-32`
+  </Step>
+  
+  <Step title="Accept Connections">
+    Enter the main event loop to handle client requests:
+    ```go
+    for {
+        conn, err := l.Accept()
+        go kvStore.HandleConnection(connection, rdr)
+    }
+    ```
+    **Source:** `server.go:34-46`
+  </Step>
+</Steps>
+
+## Network Binding
+
+ValKeyper binds to all network interfaces (`0.0.0.0`) on the specified port:
+
+```go
+addr := fmt.Sprintf("0.0.0.0:%s", kvStore.Info.Port)
+l, err := net.Listen("tcp", addr)
+if err != nil {
+    fmt.Printf("Failed to bind to port %s\n", kvStore.Info.Port)
+    os.Exit(1)
+}
+```
+
+**Source:** `server.go:24-30`
+
+<Warning>
+ValKeyper listens on **all network interfaces** by default. In production, use firewall rules to restrict access.
+</Warning>
+
+## Error Handling
+
+If port binding fails, ValKeyper exits with code 1:
+
+```go
+if err != nil {
+    fmt.Printf("Failed to bind to port %s\n", kvStore.Info.Port)
+    os.Exit(1)
+}
+```
+
+Common causes:
+- Port already in use by another process
+- Insufficient privileges (ports < 1024 on Unix)
+- Invalid port number
+
+## Limitations
+
+<AccordionGroup>
+  <Accordion title="No Configuration File">
+    Unlike Redis, ValKeyper does not support `redis.conf` files. All configuration must be done via command-line flags.
+  </Accordion>
+  
+  <Accordion title="No Runtime Reconfiguration">
+    Configuration changes require restarting the server. You cannot change settings while ValKeyper is running (except via commands like REPLCONF during replication).
+  </Accordion>
+  
+  <Accordion title="No CONFIG SET">
+    The CONFIG SET command is not implemented. Configuration is read-only at runtime.
+  </Accordion>
+  
+  <Accordion title="Limited Validation">
+    Invalid flag values may cause runtime errors. The parser does not validate port ranges or file paths.
+  </Accordion>
+</AccordionGroup>
+
+## Best Practices
+
+<CardGroup cols={2}>
+  <Card title="Document Your Setup" icon="file-lines">
+    Keep a record of command-line flags used in production. Consider using wrapper scripts or systemd unit files.
+  </Card>
+  
+  <Card title="Use Absolute Paths" icon="folder-tree">
+    Always specify absolute paths for `--dir` to avoid confusion with working directories.
+  </Card>
+  
+  <Card title="Quote Composite Values" icon="quotes">
+    Remember to quote the `--replicaof` value: `--replicaof "host port"`
+  </Card>
+  
+  <Card title="Monitor Port Conflicts" icon="network-wired">
+    Check that ports are available before starting, especially when running multiple instances.
+  </Card>
+</CardGroup>
+
+## Example Systemd Unit
+
+For production deployments, use a systemd service file:
+
+```ini
+[Unit]
+Description=ValKeyper Server
+After=network.target
+
+[Service]
+Type=simple
+User=valkeyper
+WorkingDirectory=/opt/valkeyper
+ExecStart=/opt/valkeyper/your_program.sh \
+  --port 6379 \
+  --dir /var/lib/valkeyper \
+  --dbfilename dump.rdb
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target
+```
+
+This ensures consistent configuration and automatic restarts.

@@ -1,0 +1,307 @@
+---
+title: "store"
+description: "Key-value store package with replication and stream support"
+---
+
+The `store` package provides the core key-value storage functionality for ValKeyper, including support for expiration, replication, transactions, and Redis streams.
+
+## KVStore
+
+The main store struct that manages all data and server operations.
+
+<ParamField path="Info" type="Info">
+  Server configuration and replication information
+</ParamField>
+
+<ParamField path="store" type="map[string]string" default="{}">
+  Internal key-value storage map
+</ParamField>
+
+<ParamField path="expiryMap" type="map[string]chan int" default="{}">
+  Manages key expiration channels
+</ParamField>
+
+<ParamField path="AckCh" type="chan int">
+  Channel for replication acknowledgments
+</ParamField>
+
+<ParamField path="ProcessedWrite" type="bool">
+  Tracks if write operations have been processed
+</ParamField>
+
+<ParamField path="StreamXCh" type="chan []byte">
+  Channel for stream entry notifications
+</ParamField>
+
+<ParamField path="Stream" type="map[string][]StreamEntry" default="{}">
+  Storage for Redis stream entries by stream key
+</ParamField>
+
+### New
+
+Creates a new KVStore instance with default configuration.
+
+```go
+func New() *KVStore
+```
+
+<ResponseField name="return" type="*KVStore">
+  A new KVStore instance configured as master on port 6379
+</ResponseField>
+
+**Example:**
+
+```go
+kvStore := store.New()
+```
+
+### Set
+
+Stores a key-value pair with optional expiration.
+
+```go
+func (kv *KVStore) Set(key, value string, expiry int)
+```
+
+<ParamField path="key" type="string" required>
+  The key to store
+</ParamField>
+
+<ParamField path="value" type="string" required>
+  The value to store
+</ParamField>
+
+<ParamField path="expiry" type="int" default="-1">
+  Expiration time in milliseconds. Use -1 for no expiration
+</ParamField>
+
+**Example:**
+
+```go
+// Set without expiration
+kvStore.Set("user:1", "John Doe", -1)
+
+// Set with 5 second expiration
+kvStore.Set("session:abc", "active", 5000)
+```
+
+### HandleConnection
+
+Handles incoming client connections and processes commands.
+
+```go
+func (kv *KVStore) HandleConnection(connection Connection, parser *resp.Parser)
+```
+
+<ParamField path="connection" type="Connection" required>
+  The connection wrapper containing the net.Conn and transaction state
+</ParamField>
+
+<ParamField path="parser" type="*resp.Parser" required>
+  RESP protocol parser for reading commands
+</ParamField>
+
+**Example:**
+
+```go
+conn, _ := listener.Accept()
+connection := store.Connection{
+    Conn:       conn,
+    TxnStarted: false,
+    TxnQueue:   [][]string{},
+}
+parser := resp.NewParser(conn)
+go kvStore.HandleConnection(connection, parser)
+```
+
+### processCommand
+
+Processes individual Redis commands and returns the response.
+
+```go
+func (kv *KVStore) processCommand(buff []string, connection *Connection) []byte
+```
+
+<ParamField path="buff" type="[]string" required>
+  Array of command and arguments
+</ParamField>
+
+<ParamField path="connection" type="*Connection" required>
+  Pointer to the connection for transaction state management
+</ParamField>
+
+<ResponseField name="return" type="[]byte">
+  RESP-encoded response to send to the client
+</ResponseField>
+
+**Supported Commands:**
+
+- `PING`, `ECHO` - Basic protocol commands
+- `SET`, `GET`, `DEL` - Key-value operations
+- `INCR` - Atomic increment
+- `KEYS`, `TYPE` - Key introspection
+- `CONFIG`, `INFO` - Server information
+- `XADD`, `XRANGE`, `XREAD` - Stream operations
+- `MULTI`, `EXEC`, `DISCARD` - Transactions
+- `REPLCONF`, `PSYNC`, `WAIT` - Replication
+
+### LoadFromRDB
+
+Loads key-value pairs and expiration data from an RDB snapshot.
+
+```go
+func (kv *KVStore) LoadFromRDB(rdb *rdb.RDB)
+```
+
+<ParamField path="rdb" type="*rdb.RDB" required>
+  Parsed RDB file structure
+</ParamField>
+
+**Example:**
+
+```go
+rdbFile, _ := rdb.NewRDB("/var/lib/redis/dump.rdb")
+rdbFile.Parse()
+kvStore.LoadFromRDB(rdbFile)
+```
+
+### HandleReplication
+
+Establishes replication connection to a master server.
+
+```go
+func (kv *KVStore) HandleReplication()
+```
+
+This method performs the replication handshake and starts listening for commands from the master.
+
+**Example:**
+
+```go
+if kvStore.Info.Role == "slave" {
+    kvStore.HandleReplication()
+}
+```
+
+## Connection
+
+Wraps a network connection with transaction state.
+
+<ParamField path="Conn" type="net.Conn">
+  The underlying network connection
+</ParamField>
+
+<ParamField path="TxnStarted" type="bool" default="false">
+  Whether a MULTI transaction has been started
+</ParamField>
+
+<ParamField path="TxnQueue" type="[][]string" default="[]">
+  Queue of commands to execute on EXEC
+</ParamField>
+
+## Info
+
+Server configuration and replication metadata.
+
+<ParamField path="Role" type="string" default="master">
+  Server role: "master" or "slave"
+</ParamField>
+
+<ParamField path="MasterIP" type="string">
+  IP address of the master (slave only)
+</ParamField>
+
+<ParamField path="MasterPort" type="string">
+  Port of the master (slave only)
+</ParamField>
+
+<ParamField path="MasterReplId" type="string">
+  Master replication ID
+</ParamField>
+
+<ParamField path="MasterReplOffSet" type="int" default="0">
+  Current replication offset
+</ParamField>
+
+<ParamField path="MasterConn" type="net.Conn">
+  Connection to master server (slave only)
+</ParamField>
+
+<ParamField path="slaves" type="[]net.Conn">
+  Connected slave connections (master only)
+</ParamField>
+
+<ParamField path="Port" type="string" default="6379">
+  Server listening port
+</ParamField>
+
+<ParamField path="flags" type="map[string]string">
+  Command-line configuration flags
+</ParamField>
+
+## StreamEntry
+
+Represents a single entry in a Redis stream.
+
+<ParamField path="Id" type="string">
+  Stream entry ID in format "timestamp-sequence"
+</ParamField>
+
+<ParamField path="Pair" type="map[string]string">
+  Field-value pairs for this stream entry
+</ParamField>
+
+**Example:**
+
+```go
+entry := StreamEntry{
+    Id: "1234567890-0",
+    Pair: map[string]string{
+        "temperature": "72.5",
+        "humidity": "45",
+    },
+}
+```
+
+## Complete Example
+
+Here's how the store package integrates with other components:
+
+```go
+package main
+
+import (
+    "fmt"
+    "net"
+    "github.com/codecrafters-io/redis-starter-go/app/resp"
+    "github.com/codecrafters-io/redis-starter-go/app/store"
+)
+
+func main() {
+    // Initialize store
+    kvStore := store.New()
+    kvStore.ParseCommandLine()
+    
+    // Handle replication if configured as slave
+    if kvStore.Info.Role == "slave" {
+        kvStore.HandleReplication()
+    }
+    
+    // Start listening
+    addr := fmt.Sprintf("0.0.0.0:%s", kvStore.Info.Port)
+    listener, _ := net.Listen("tcp", addr)
+    defer listener.Close()
+    
+    // Accept connections
+    for {
+        conn, _ := listener.Accept()
+        connection := store.Connection{
+            Conn:       conn,
+            TxnStarted: false,
+            TxnQueue:   [][]string{},
+        }
+        parser := resp.NewParser(conn)
+        go kvStore.HandleConnection(connection, parser)
+    }
+}
+```

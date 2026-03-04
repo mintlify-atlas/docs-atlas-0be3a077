@@ -1,0 +1,300 @@
+---
+title: Welcome to ValKeyper
+description: A high-performance in-memory key-value store with Redis compatibility
+mode: custom
+---
+
+<div className="relative overflow-hidden bg-gradient-to-br from-[#0A0B10] via-[#0f1117] to-[#0A0B10] dark:from-[#0A0B10] dark:via-[#0f1117] dark:to-[#0A0B10] py-20">
+  <div className="absolute inset-0 bg-[radial-gradient(circle_at_50%_50%,rgba(59,176,255,0.1),transparent_50%)]"></div>
+  
+  <div className="relative max-w-6xl mx-auto px-6 lg:px-8">
+    <div className="grid grid-cols-1 lg:grid-cols-12 gap-12 items-center">
+      <div className="lg:col-span-7">
+        <h1 className="text-4xl sm:text-5xl lg:text-6xl font-bold text-white mb-6">
+          ValKeyper Documentation
+        </h1>
+        <p className="text-lg sm:text-xl text-gray-300 dark:text-gray-300 max-w-2xl mb-8">
+          Build fast, scalable applications with an in-memory key-value store that replicates Redis core features — persistence, replication, streams, and transactions.
+        </p>
+        <div className="flex flex-wrap gap-4">
+          <a
+            href="/quickstart"
+            className="inline-flex items-center justify-center px-6 py-3 text-base font-semibold text-black bg-gradient-to-r from-[#fbc926] to-[#f9d563] rounded-xl hover:from-[#f9d563] hover:to-[#fbc926] transition-all shadow-lg hover:shadow-xl"
+          >
+            Get Started
+          </a>
+          <a
+            href="/commands/overview"
+            className="inline-flex items-center justify-center px-6 py-3 text-base font-semibold text-white bg-white/10 border border-white/30 rounded-xl hover:bg-white/20 hover:border-[#8c73fa] transition-all"
+          >
+            Explore Commands
+          </a>
+        </div>
+      </div>
+      <div className="lg:col-span-5 hidden lg:block">
+        <div className="relative">
+          <div className="absolute inset-0 bg-gradient-to-r from-[#3AB0FF] to-[#8c73fa] rounded-2xl blur-3xl opacity-20"></div>
+          <div className="relative bg-[rgba(20,23,33,0.9)] border border-white/10 rounded-2xl p-6 shadow-[0_8px_24px_rgba(0,255,255,0.2)]">
+            <div className="flex items-center gap-2 mb-4">
+              <div className="w-3 h-3 rounded-full bg-red-500"></div>
+              <div className="w-3 h-3 rounded-full bg-yellow-500"></div>
+              <div className="w-3 h-3 rounded-full bg-green-500"></div>
+            </div>
+            <pre className="text-sm text-gray-300 overflow-x-auto">
+              <code>{`$ redis-cli -p 6379
+127.0.0.1:6379> SET mykey "Hello"
+OK
+127.0.0.1:6379> GET mykey
+"Hello"
+127.0.0.1:6379> EXPIRE mykey 10
+(integer) 1`}</code>
+            </pre>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div className="mt-16 mb-16 max-w-5xl mx-auto px-6">
+  <div className="text-center mb-12">
+    <h2 className="text-3xl font-bold text-gray-900 dark:text-white mb-4">
+      Quick Start
+    </h2>
+    <p className="text-base text-gray-600 dark:text-gray-400 max-w-2xl mx-auto">
+      Get ValKeyper up and running in minutes with these simple steps
+    </p>
+  </div>
+
+  <Steps>
+    <Step title="Clone the repository">
+      Download ValKeyper from GitHub to get started.
+      
+      ```bash
+      git clone https://github.com/koul1sh/valkeyper.git
+      cd valkeyper
+      ```
+    </Step>
+
+    <Step title="Build the project">
+      Compile ValKeyper using Go's build tools.
+      
+      ```bash
+      go build
+      ```
+      
+      This creates the `valkeyper` executable in your current directory.
+    </Step>
+
+    <Step title="Start the server">
+      Launch ValKeyper on the default port (6379).
+      
+      ```bash
+      ./valkeyper
+      ```
+      
+      <Note>
+        You can customize the port with `--port` flag:
+        ```bash
+        ./valkeyper --port 6380
+        ```
+      </Note>
+    </Step>
+
+    <Step title="Connect and test">
+      Use `redis-cli` to connect and run your first commands.
+      
+      ```bash
+      redis-cli -p 6379
+      ```
+      
+      Try these commands:
+      ```bash
+      PING
+      SET greeting "Hello, World!"
+      GET greeting
+      ```
+      
+      <Accordion title="Example output">
+        ```
+        127.0.0.1:6379> PING
+        PONG
+        127.0.0.1:6379> SET greeting "Hello, World!"
+        OK
+        127.0.0.1:6379> GET greeting
+        "Hello, World!"
+        ```
+      </Accordion>
+    </Step>
+  </Steps>
+</div>
+
+<div className="mt-16 mb-16 max-w-5xl mx-auto px-6">
+  <div className="text-center mb-12">
+    <h2 className="text-3xl font-bold text-gray-900 dark:text-white mb-4">
+      Explore by Topic
+    </h2>
+    <p className="text-base text-gray-600 dark:text-gray-400">
+      Deep dive into ValKeyper's features and capabilities
+    </p>
+  </div>
+
+  <CardGroup cols={3}>
+    <Card title="Core Concepts" icon="brain" href="/concepts/architecture">
+      Understand ValKeyper's architecture, RESP protocol, and data model.
+    </Card>
+    <Card title="Commands" icon="terminal" href="/commands/overview">
+      Explore the full command set for strings, keys, streams, and transactions.
+    </Card>
+    <Card title="Replication" icon="clone" href="/operations/replication">
+      Set up master-slave replication for high availability.
+    </Card>
+    <Card title="Persistence" icon="database" href="/operations/persistence">
+      Learn about RDB file format and data durability.
+    </Card>
+    <Card title="Streams" icon="water" href="/advanced/streams">
+      Build event-driven applications with real-time data flows.
+    </Card>
+    <Card title="Transactions" icon="lock" href="/advanced/transactions">
+      Ensure atomicity with MULTI/EXEC transaction blocks.
+    </Card>
+  </CardGroup>
+</div>
+
+<div className="mt-16 mb-16 max-w-5xl mx-auto px-6">
+  <div className="text-center mb-12">
+    <h2 className="text-3xl font-bold text-gray-900 dark:text-white mb-4">
+      Key Features
+    </h2>
+    <p className="text-base text-gray-600 dark:text-gray-400">
+      Everything you need to build scalable, high-performance applications
+    </p>
+  </div>
+
+  <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+    <div className="bg-gray-50 dark:bg-[#1a1d27] border border-gray-200 dark:border-[#27272a] rounded-xl p-6 hover:border-[#fbc926] dark:hover:border-[#fbc926] transition-colors">
+      <div className="flex items-start gap-4">
+        <div className="flex-shrink-0 w-10 h-10 rounded-lg bg-gradient-to-br from-[#fbc926] to-[#f9d563] flex items-center justify-center">
+          <svg className="w-5 h-5 text-black" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" />
+          </svg>
+        </div>
+        <div>
+          <h3 className="text-lg font-semibold text-gray-900 dark:text-white mb-2">
+            Redis Compatible
+          </h3>
+          <p className="text-sm text-gray-600 dark:text-gray-400">
+            Works seamlessly with redis-cli and supports core Redis commands for easy integration.
+          </p>
+        </div>
+      </div>
+    </div>
+
+    <div className="bg-gray-50 dark:bg-[#1a1d27] border border-gray-200 dark:border-[#27272a] rounded-xl p-6 hover:border-[#fbc926] dark:hover:border-[#fbc926] transition-colors">
+      <div className="flex items-start gap-4">
+        <div className="flex-shrink-0 w-10 h-10 rounded-lg bg-gradient-to-br from-[#8c73fa] to-[#a891fc] flex items-center justify-center">
+          <svg className="w-5 h-5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 7v10c0 2.21 3.582 4 8 4s8-1.79 8-4V7M4 7c0 2.21 3.582 4 8 4s8-1.79 8-4M4 7c0-2.21 3.582-4 8-4s8 1.79 8 4" />
+          </svg>
+        </div>
+        <div>
+          <h3 className="text-lg font-semibold text-gray-900 dark:text-white mb-2">
+            RDB Persistence
+          </h3>
+          <p className="text-sm text-gray-600 dark:text-gray-400">
+            Load data from RDB files for durability across server restarts.
+          </p>
+        </div>
+      </div>
+    </div>
+
+    <div className="bg-gray-50 dark:bg-[#1a1d27] border border-gray-200 dark:border-[#27272a] rounded-xl p-6 hover:border-[#fbc926] dark:hover:border-[#fbc926] transition-colors">
+      <div className="flex items-start gap-4">
+        <div className="flex-shrink-0 w-10 h-10 rounded-lg bg-gradient-to-br from-[#3AB0FF] to-[#5ebfff] flex items-center justify-center">
+          <svg className="w-5 h-5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
+          </svg>
+        </div>
+        <div>
+          <h3 className="text-lg font-semibold text-gray-900 dark:text-white mb-2">
+            Master-Slave Replication
+          </h3>
+          <p className="text-sm text-gray-600 dark:text-gray-400">
+            Scale reads and ensure high availability with built-in replication support.
+          </p>
+        </div>
+      </div>
+    </div>
+
+    <div className="bg-gray-50 dark:bg-[#1a1d27] border border-gray-200 dark:border-[#27272a] rounded-xl p-6 hover:border-[#fbc926] dark:hover:border-[#fbc926] transition-colors">
+      <div className="flex items-start gap-4">
+        <div className="flex-shrink-0 w-10 h-10 rounded-lg bg-gradient-to-br from-[#fbc926] to-[#f9d563] flex items-center justify-center">
+          <svg className="w-5 h-5 text-black" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
+          </svg>
+        </div>
+        <div>
+          <h3 className="text-lg font-semibold text-gray-900 dark:text-white mb-2">
+            Key Expiration
+          </h3>
+          <p className="text-sm text-gray-600 dark:text-gray-400">
+            Set time-to-live (TTL) on keys with automatic expiration handling.
+          </p>
+        </div>
+      </div>
+    </div>
+
+    <div className="bg-gray-50 dark:bg-[#1a1d27] border border-gray-200 dark:border-[#27272a] rounded-xl p-6 hover:border-[#fbc926] dark:hover:border-[#fbc926] transition-colors">
+      <div className="flex items-start gap-4">
+        <div className="flex-shrink-0 w-10 h-10 rounded-lg bg-gradient-to-br from-[#8c73fa] to-[#a891fc] flex items-center justify-center">
+          <svg className="w-5 h-5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M9 19l3 3m0 0l3-3m-3 3V10" />
+          </svg>
+        </div>
+        <div>
+          <h3 className="text-lg font-semibold text-gray-900 dark:text-white mb-2">
+            Event Streams
+          </h3>
+          <p className="text-sm text-gray-600 dark:text-gray-400">
+            Build real-time applications with XADD, XREAD, and XRANGE stream commands.
+          </p>
+        </div>
+      </div>
+    </div>
+
+    <div className="bg-gray-50 dark:bg-[#1a1d27] border border-gray-200 dark:border-[#27272a] rounded-xl p-6 hover:border-[#fbc926] dark:hover:border-[#fbc926] transition-colors">
+      <div className="flex items-start gap-4">
+        <div className="flex-shrink-0 w-10 h-10 rounded-lg bg-gradient-to-br from-[#3AB0FF] to-[#5ebfff] flex items-center justify-center">
+          <svg className="w-5 h-5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z" />
+          </svg>
+        </div>
+        <div>
+          <h3 className="text-lg font-semibold text-gray-900 dark:text-white mb-2">
+            ACID Transactions
+          </h3>
+          <p className="text-sm text-gray-600 dark:text-gray-400">
+            Ensure data consistency with MULTI/EXEC transaction blocks.
+          </p>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div className="mt-20 mb-16 max-w-5xl mx-auto px-6">
+  <div className="bg-gradient-to-r from-[#0f1117] to-[#1a1d27] dark:from-[#0f1117] dark:to-[#1a1d27] border border-[#27272a] rounded-2xl p-8 md:p-12 text-center">
+    <h2 className="text-3xl font-bold text-white mb-4">
+      Ready to get started?
+    </h2>
+    <p className="text-lg text-gray-300 dark:text-gray-300 mb-8 max-w-2xl mx-auto">
+      Jump into the quickstart guide and have ValKeyper running in under 5 minutes.
+    </p>
+    <a
+      href="/quickstart"
+      className="inline-flex items-center justify-center px-8 py-4 text-base font-semibold text-black bg-gradient-to-r from-[#fbc926] to-[#f9d563] rounded-xl hover:from-[#f9d563] hover:to-[#fbc926] transition-all shadow-lg hover:shadow-xl"
+    >
+      Start Building Now
+    </a>
+  </div>
+</div>

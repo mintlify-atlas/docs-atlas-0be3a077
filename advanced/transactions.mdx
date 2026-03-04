@@ -1,0 +1,387 @@
+---
+title: 'Transactions'
+description: 'Understanding ValKeyper transaction implementation and atomicity guarantees'
+---
+
+## Overview
+
+ValKeyper implements Redis-compatible transactions using the MULTI/EXEC/DISCARD command sequence. Transactions provide atomic execution of multiple commands, ensuring all commands execute sequentially without interleaving from other clients.
+
+## Transaction State Management
+
+Each client connection maintains its own transaction state:
+
+```go
+type Connection struct {
+    Conn       net.Conn
+    TxnStarted bool
+    TxnQueue   [][]string
+}
+```
+
+### Fields
+
+- **`TxnStarted`**: Boolean flag indicating if a transaction is active
+- **`TxnQueue`**: Slice of commands queued for execution
+- Each queued command is represented as `[]string` (command and arguments)
+
+## MULTI Command
+
+The `MULTI` command initiates a new transaction.
+
+### Syntax
+
+```bash
+MULTI
+```
+
+### Implementation
+
+```go
+case "MULTI":
+    connection.TxnStarted = true
+    res = []byte("+OK\r\n")
+```
+
+### Behavior
+
+1. Sets `TxnStarted` flag to `true`
+2. Returns `+OK` immediately
+3. Subsequent commands are queued instead of executed
+
+### Example
+
+```bash
+> MULTI
++OK
+```
+
+## Command Queueing
+
+Once a transaction is started, all commands (except EXEC and DISCARD) are queued:
+
+```go
+txnCommands := []string{"EXEC", "DISCARD"}
+var res []byte = []byte{}
+
+if connection.TxnStarted && !slices.Contains(txnCommands, buff[0]) {
+    res = []byte("+QUEUED\r\n")
+    connection.TxnQueue = append(connection.TxnQueue, buff)
+    connection.Conn.Write(res)
+    continue
+}
+```
+
+### Queueing Logic
+
+1. Check if transaction is active (`TxnStarted == true`)
+2. Verify command is not EXEC or DISCARD
+3. Append command to `TxnQueue`
+4. Return `+QUEUED` to client
+5. Continue to next command without execution
+
+### Example
+
+```bash
+> MULTI
++OK
+> SET key1 value1
++QUEUED
+> SET key2 value2
++QUEUED
+> GET key1
++QUEUED
+```
+
+## EXEC Command
+
+The `EXEC` command executes all queued commands atomically.
+
+### Syntax
+
+```bash
+EXEC
+```
+
+### Implementation
+
+```go
+case "EXEC":
+    if connection.TxnStarted {
+        tmp := []string{}
+        
+        for _, cmd := range connection.TxnQueue {
+            tmp = append(tmp, string(kv.processCommand(cmd, connection)))
+        }
+        res = resp.ToArrayAnyType(tmp)
+        connection.TxnStarted = false
+    } else {
+        res = []byte("-ERR EXEC without MULTI\r\n")
+    }
+```
+
+### Execution Flow
+
+1. **Validation**: Check if transaction is active
+   - If no active transaction: Return error
+   - If active: Proceed to execution
+
+2. **Sequential Execution**: Process each queued command
+   ```go
+   for _, cmd := range connection.TxnQueue {
+       tmp = append(tmp, string(kv.processCommand(cmd, connection)))
+   }
+   ```
+
+3. **Response Collection**: Collect all command responses in order
+
+4. **Array Response**: Return all responses as a RESP array
+
+5. **State Reset**: Set `TxnStarted = false`
+
+<Note>
+The transaction queue is NOT explicitly cleared after EXEC. The next MULTI command will create a fresh transaction context.
+</Note>
+
+### Example
+
+```bash
+> MULTI
++OK
+> SET counter 100
++QUEUED
+> INCR counter
++QUEUED
+> GET counter
++QUEUED
+> EXEC
+*3
++OK
+:101
+$3
+101
+```
+
+## DISCARD Command
+
+The `DISCARD` command cancels a transaction and clears the queue.
+
+### Syntax
+
+```bash
+DISCARD
+```
+
+### Implementation
+
+```go
+case "DISCARD":
+    if connection.TxnStarted {
+        connection.TxnQueue = [][]string{}
+        connection.TxnStarted = false
+        res = []byte("+OK\r\n")
+    } else {
+        res = []byte("-ERR DISCARD without MULTI\r\n")
+    }
+```
+
+### Behavior
+
+1. **Validation**: Verify transaction is active
+2. **Queue Reset**: Clear `TxnQueue` to empty slice
+3. **State Reset**: Set `TxnStarted = false`
+4. **No Execution**: Queued commands are discarded without execution
+
+### Example
+
+```bash
+> MULTI
++OK
+> SET key1 value1
++QUEUED
+> SET key2 value2
++QUEUED
+> DISCARD
++OK
+> GET key1
+$-1  # Keys were not set
+```
+
+## Atomicity Guarantees
+
+ValKeyper provides the following transaction guarantees:
+
+### 1. Sequential Execution
+
+All commands in a transaction execute sequentially without interruption:
+
+```go
+for _, cmd := range connection.TxnQueue {
+    tmp = append(tmp, string(kv.processCommand(cmd, connection)))
+}
+```
+
+### 2. Isolation
+
+Each connection has its own transaction state. Commands from other clients cannot interleave during EXEC.
+
+### 3. No Rollback
+
+<Warning>
+ValKeyper does NOT support rollback. If a command fails during EXEC, subsequent commands still execute. This matches Redis behavior.
+</Warning>
+
+```bash
+> MULTI
++OK
+> SET key value
++QUEUED
+> INCR key  # Will fail (value is not an integer)
++QUEUED
+> SET key2 value2
++QUEUED
+> EXEC
+*3
++OK
+-ERR value is not an integer or out of range
++OK  # This still executes!
+```
+
+### 4. All-or-Nothing Queueing
+
+Commands are either:
+- Successfully queued (return `+QUEUED`), OR
+- The transaction hasn't started (error)
+
+There's no partial queueing.
+
+## Error Handling
+
+### EXEC Without MULTI
+
+```bash
+> EXEC
+-ERR EXEC without MULTI
+```
+
+### DISCARD Without MULTI
+
+```bash
+> DISCARD
+-ERR DISCARD without MULTI
+```
+
+### Command Errors During EXEC
+
+Errors are returned in the response array at the corresponding position:
+
+```bash
+> MULTI
++OK
+> SET key 42
++QUEUED
+> INCR key
++QUEUED
+> LPUSH key value  # Invalid operation on string
++QUEUED
+> EXEC
+*3
++OK
+:43
+-ERR wrong type  # Error for LPUSH
+```
+
+## Transaction Patterns
+
+### Counter Increment
+
+```bash
+MULTI
+GET counter
+INCR counter
+EXEC
+```
+
+### Multi-Key Update
+
+```bash
+MULTI
+SET user:1:name "Alice"
+SET user:1:email "alice@example.com"
+SET user:1:age "30"
+EXEC
+```
+
+### Conditional Execution Alternative
+
+Since ValKeyper doesn't support WATCH, use transactions for simple atomic updates:
+
+```bash
+MULTI
+GET inventory:item1
+DEL inventory:item1
+SET inventory:item2 value
+EXEC
+```
+
+## Limitations
+
+<CardGroup cols={2}>
+  <Card title="No WATCH" icon="eye-slash">
+    ValKeyper does not implement the WATCH command for optimistic locking.
+  </Card>
+  
+  <Card title="No Rollback" icon="rotate-left">
+    Failed commands don't stop execution or rollback changes.
+  </Card>
+  
+  <Card title="Single-Threaded" icon="microchip">
+    Transaction execution is single-threaded per connection but not globally.
+  </Card>
+  
+  <Card title="No Persistence" icon="database">
+    Transactions are not logged for crash recovery.
+  </Card>
+</CardGroup>
+
+## Performance Considerations
+
+### Memory Usage
+
+The transaction queue stores full command arrays in memory:
+
+```go
+TxnQueue [][]string  // Grows with queued commands
+```
+
+Large transactions consume memory proportional to:
+- Number of commands
+- Size of command arguments
+
+### Execution Time
+
+All commands execute synchronously during EXEC:
+- Long-running commands block the connection
+- No parallelization within a transaction
+- Other clients can still execute on their connections
+
+### Best Practices
+
+1. **Keep Transactions Short**: Minimize the number of queued commands
+2. **Avoid Large Arguments**: Large values increase memory usage
+3. **Handle Errors**: Check each response in the EXEC array
+4. **Use for Atomicity**: Only use transactions when atomicity is required
+
+<Tip>
+For simple single-command operations, avoid transactions. The overhead of MULTI/EXEC is unnecessary for atomic commands like SET or INCR.
+</Tip>
+
+## Implementation Reference
+
+Key source locations in `store.go`:
+
+- **Connection struct**: Lines 20-24
+- **MULTI handler**: Lines 523-525
+- **Command queueing**: Lines 151-158
+- **EXEC handler**: Lines 526-539
+- **DISCARD handler**: Lines 540-547

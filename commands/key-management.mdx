@@ -1,0 +1,300 @@
+---
+title: 'Key Management'
+description: 'Commands for managing keys in ValKeyper'
+icon: 'key'
+---
+
+Key management commands allow you to inspect, delete, and manage keys across your ValKeyper instance.
+
+## DEL
+
+Removes the specified key. A key is ignored if it does not exist. If the key has an associated expiry timer, it is also cancelled.
+
+### Syntax
+
+```bash
+DEL key
+```
+
+### Parameters
+
+<ParamField path="key" type="string" required>
+  The key to delete
+</ParamField>
+
+### Return Value
+
+Integer reply:
+- `1` if the key was removed
+- `0` if the key does not exist
+
+### Examples
+
+```bash
+# Set and delete a key
+SET mykey "Hello"
+DEL mykey
+# Response: 1
+
+# Try to delete a non-existent key
+DEL nonexistent
+# Response: 0
+
+# Delete a key with expiry
+SET tempkey "value" PX 10000
+DEL tempkey
+# Response: 1
+# The expiry timer is also cancelled
+```
+
+### Implementation Details
+
+From `store.go:193-208`:
+
+```go
+case "DEL":
+    key := buff[1]
+    _, ok := kv.store[key]
+    if !ok {
+        res = []byte(":0\r\n")
+        break switchLoop
+    }
+    delete(kv.store, key)
+    
+    ch, ok := kv.expiryMap[key]
+    if ok {
+        ch <- 1  // Cancel the expiry goroutine
+    }
+    
+    res = []byte(":1\r\n")
+```
+
+When a key with an expiry is deleted, the associated goroutine handling the expiry is signaled to terminate, preventing memory leaks.
+
+---
+
+## KEYS
+
+Returns all keys currently stored in the database. In this implementation, it returns all keys regardless of the pattern argument.
+
+### Syntax
+
+```bash
+KEYS pattern
+```
+
+### Parameters
+
+<ParamField path="pattern" type="string" required>
+  Pattern to match keys against. In the current implementation, this parameter is accepted but all keys are returned.
+</ParamField>
+
+### Return Value
+
+Array reply: List of keys in the database.
+
+### Examples
+
+```bash
+# Set multiple keys
+SET key1 "value1"
+SET key2 "value2"
+SET key3 "value3"
+
+# Get all keys
+KEYS *
+# Response: 
+# 1) "key1"
+# 2) "key2"
+# 3) "key3"
+
+# Empty database
+DEL key1
+DEL key2
+DEL key3
+KEYS *
+# Response: (empty array)
+```
+
+### Implementation Details
+
+From `store.go:240-246`:
+
+```go
+case "KEYS":
+    keys := []string{}
+    
+    for k := range kv.store {
+        keys = append(keys, k)
+    }
+    res = resp.ToArray(keys)
+```
+
+<Warning>
+  The KEYS command should be used with caution in production environments with large datasets, as it iterates through all keys and can impact performance.
+</Warning>
+
+---
+
+## TYPE
+
+Returns the data type of the value stored at the specified key.
+
+### Syntax
+
+```bash
+TYPE key
+```
+
+### Parameters
+
+<ParamField path="key" type="string" required>
+  The key to inspect
+</ParamField>
+
+### Return Value
+
+Simple string reply:
+- `string` - The key holds a string value
+- `stream` - The key holds a stream
+- `none` - The key does not exist
+
+### Examples
+
+```bash
+# Check type of a string key
+SET mykey "Hello"
+TYPE mykey
+# Response: string
+
+# Check type of a stream
+XADD mystream * field1 value1
+TYPE mystream
+# Response: stream
+
+# Check type of non-existent key
+TYPE nonexistent
+# Response: none
+```
+
+### Implementation Details
+
+From `store.go:305-316`:
+
+```go
+case "TYPE":
+    _, ok := kv.store[buff[1]]
+    if ok {
+        res = []byte("+string\r\n")
+    } else {
+        _, ok2 := kv.Stream[buff[1]]
+        if ok2 {
+            res = []byte("+stream\r\n")
+        } else {
+            res = []byte("+none\r\n")
+        }
+    }
+```
+
+---
+
+## EXPIRE (via SET)
+
+While ValKeyper doesn't have a standalone `EXPIRE` command, you can set expiration times when creating keys using the `SET` command with the `PX` option.
+
+### Syntax
+
+```bash
+SET key value PX milliseconds
+```
+
+### Parameters
+
+<ParamField path="key" type="string" required>
+  The key to set with expiration
+</ParamField>
+
+<ParamField path="value" type="string" required>
+  The value to store
+</ParamField>
+
+<ParamField path="milliseconds" type="integer" required>
+  Time to live in milliseconds
+</ParamField>
+
+### Examples
+
+```bash
+# Set a key that expires in 5 seconds
+SET session "active" PX 5000
+GET session
+# Response: "active"
+
+# Wait 6 seconds
+GET session
+# Response: (nil)
+```
+
+### Implementation Details
+
+From `store.go:53-62`:
+
+```go
+func (kv *KVStore) Set(key, value string, expiry int) {
+    if expiry != -1 {
+        timeout := time.After(time.Duration(expiry) * time.Millisecond)
+        go kv.handleExpiry(timeout, key)
+    }
+    kv.store[key] = value
+}
+```
+
+The `handleExpiry` function (lines 94-105) manages a goroutine that waits for either:
+- The timeout to expire, which deletes the key
+- A cancellation signal (when the key is deleted manually)
+
+## Use Cases
+
+### Database Cleanup
+
+```bash
+# Remove temporary data
+SET temp:processing "data"
+DEL temp:processing
+```
+
+### Key Discovery
+
+```bash
+# Find all keys in the database
+KEYS *
+
+# Inspect each key type
+TYPE user:123
+TYPE stream:events
+```
+
+### Session Management
+
+```bash
+# Create session with auto-expiry
+SET session:abc123 "{\"user\": \"john\"}" PX 1800000  # 30 minutes
+
+# Manually end session
+DEL session:abc123
+```
+
+### Type Checking
+
+```bash
+# Verify data type before operations
+TYPE mycounter
+# Response: string
+
+INCR mycounter  # Safe to increment
+
+TYPE mystream
+# Response: stream
+
+XRANGE mystream - +  # Safe to read stream
+```

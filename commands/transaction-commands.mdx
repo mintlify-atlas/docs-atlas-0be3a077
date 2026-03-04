@@ -1,0 +1,371 @@
+---
+title: 'Transaction Commands'
+description: 'Commands for executing atomic transactions in ValKeyper'
+icon: 'layer-group'
+---
+
+Transactions in ValKeyper allow you to execute multiple commands atomically. All commands in a transaction are queued and executed sequentially as a single isolated operation.
+
+## Overview
+
+Transactions in ValKeyper follow the Redis transaction model:
+
+1. **MULTI** - Begin a transaction block
+2. **Command queuing** - Commands are queued and return `QUEUED`
+3. **EXEC** - Execute all queued commands atomically
+4. **DISCARD** - Cancel the transaction (alternative to EXEC)
+
+<Note>
+  Commands inside a transaction are not executed until `EXEC` is called. This means you cannot use the result of one command as input to another within the same transaction.
+</Note>
+
+---
+
+## MULTI
+
+Marks the start of a transaction block. Subsequent commands will be queued for atomic execution.
+
+### Syntax
+
+```bash
+MULTI
+```
+
+### Return Value
+
+Simple string reply: `OK`
+
+### Examples
+
+```bash
+MULTI
+# Response: OK
+
+SET key1 "value1"
+# Response: QUEUED
+
+SET key2 "value2"
+# Response: QUEUED
+
+EXEC
+# Response:
+# 1) OK
+# 2) OK
+```
+
+### Implementation Details
+
+From `store.go:523-525`:
+
+```go
+case "MULTI":
+    connection.TxnStarted = true
+    res = []byte("+OK\r\n")
+```
+
+The transaction state is tracked per connection, allowing multiple clients to have independent transactions.
+
+---
+
+## Command Queuing
+
+After `MULTI` is called, all commands (except `EXEC` and `DISCARD`) are queued instead of being executed immediately.
+
+### Behavior
+
+- Commands return `QUEUED` instead of their normal response
+- Commands are stored in the order they are received
+- No commands are actually executed until `EXEC` is called
+
+### Examples
+
+```bash
+MULTI
+# Response: OK
+
+SET mykey "hello"
+# Response: QUEUED
+
+INCR counter
+# Response: QUEUED
+
+GET mykey
+# Response: QUEUED
+
+# Commands are not executed yet
+# Calling EXEC will execute them all
+```
+
+### Implementation Details
+
+From `store.go:151-158`:
+
+```go
+txnCommands := []string{"EXEC", "DISCARD"}
+var res []byte = []byte{}
+if connection.TxnStarted && !slices.Contains(txnCommands, buff[0]) {
+    res = []byte("+QUEUED\r\n")
+    connection.TxnQueue = append(connection.TxnQueue, buff)
+    connection.Conn.Write(res)
+    continue
+}
+```
+
+Commands are added to the `TxnQueue` slice and executed later by `EXEC`.
+
+---
+
+## EXEC
+
+Executes all commands in the transaction queue atomically. After execution, the transaction is automatically ended.
+
+### Syntax
+
+```bash
+EXEC
+```
+
+### Return Value
+
+Array reply: An array of replies, one for each command in the transaction, in the order they were queued.
+
+### Errors
+
+- `-ERR EXEC without MULTI` - Returned if `EXEC` is called without first calling `MULTI`
+
+### Examples
+
+```bash
+# Simple transaction
+MULTI
+SET key1 "value1"
+SET key2 "value2"
+GET key1
+EXEC
+# Response:
+# 1) OK
+# 2) OK
+# 3) "value1"
+
+# Transaction with counter
+MULTI
+SET counter "0"
+INCR counter
+INCR counter
+INCR counter
+GET counter
+EXEC
+# Response:
+# 1) OK
+# 2) 1
+# 3) 2
+# 4) 3
+# 5) "3"
+
+# Error: EXEC without MULTI
+EXEC
+# Response: -ERR EXEC without MULTI
+```
+
+### Implementation Details
+
+From `store.go:526-539`:
+
+```go
+case "EXEC":
+    if connection.TxnStarted {
+        tmp := []string{}
+        
+        for _, cmd := range connection.TxnQueue {
+            tmp = append(tmp, string(kv.processCommand(cmd, connection)))
+        }
+        res = resp.ToArrayAnyType(tmp)
+        connection.TxnStarted = false
+    } else {
+        res = []byte("-ERR EXEC without MULTI\r\n")
+    }
+```
+
+Each queued command is executed sequentially by calling `processCommand`, and the results are collected into an array response.
+
+---
+
+## DISCARD
+
+Flushes all previously queued commands in a transaction and ends the transaction. The connection returns to normal mode.
+
+### Syntax
+
+```bash
+DISCARD
+```
+
+### Return Value
+
+Simple string reply: `OK`
+
+### Errors
+
+- `-ERR DISCARD without MULTI` - Returned if `DISCARD` is called without first calling `MULTI`
+
+### Examples
+
+```bash
+# Start and discard a transaction
+MULTI
+SET key1 "value1"
+SET key2 "value2"
+DISCARD
+# Response: OK
+
+# Keys were not set because transaction was discarded
+GET key1
+# Response: (nil)
+
+# Error: DISCARD without MULTI
+DISCARD
+# Response: -ERR DISCARD without MULTI
+```
+
+### Implementation Details
+
+From `store.go:540-547`:
+
+```go
+case "DISCARD":
+    if connection.TxnStarted {
+        connection.TxnQueue = [][]string{}
+        connection.TxnStarted = false
+        res = []byte("+OK\r\n")
+    } else {
+        res = []byte("-ERR DISCARD without MULTI\r\n")
+    }
+```
+
+The transaction queue is cleared and the transaction state is reset.
+
+---
+
+## Transaction Guarantees
+
+### Atomicity
+
+All commands in a transaction are executed sequentially as a single isolated operation. Other clients will not see partial results.
+
+```bash
+# Client 1
+MULTI
+SET balance 1000
+INCR transactions
+EXEC
+
+# Client 2 will see either:
+# - Neither change (before EXEC)
+# - Both changes (after EXEC)
+# Never one without the other
+```
+
+### Isolation
+
+Commands from other clients will never be interleaved with transaction commands during execution.
+
+```bash
+# Client 1
+MULTI
+INCR counter
+INCR counter
+INCR counter
+EXEC
+
+# Client 2
+INCR counter
+
+# The counter will be incremented 4 times total
+# Client 2's command will execute either before or after
+# the entire transaction, never in the middle
+```
+
+### No Rollback
+
+<Warning>
+  ValKeyper does not support rollback. If a command fails during `EXEC`, the remaining commands will still execute. This matches Redis behavior.
+</Warning>
+
+```bash
+MULTI
+SET key1 "value1"
+INCR not_a_number  # This will fail
+SET key2 "value2"
+EXEC
+# Response:
+# 1) OK
+# 2) -ERR value is not an integer or out of range
+# 3) OK
+
+# key1 and key2 were both set despite the error
+```
+
+## Use Cases
+
+### Atomic Updates
+
+```bash
+# Update user profile atomically
+MULTI
+SET user:123:name "John Doe"
+SET user:123:email "john@example.com"
+SET user:123:updated_at "2026-03-04T12:00:00Z"
+EXEC
+```
+
+### Counters and Metrics
+
+```bash
+# Update multiple related counters
+MULTI
+INCR stats:page_views
+INCR stats:unique_visitors
+SET stats:last_visit "2026-03-04T12:00:00Z"
+EXEC
+```
+
+### Conditional Execution (Optimistic Locking)
+
+```bash
+# Check balance before transfer
+GET account:balance
+# Response: "1000"
+
+MULTI
+SET account:balance "900"
+SET transaction:log "Transferred $100"
+INCR transaction:count
+EXEC
+```
+
+### Cleanup Operations
+
+```bash
+# Clean up temporary data atomically
+MULTI
+DEL temp:session:abc123
+DEL temp:cache:abc123
+DEL temp:lock:abc123
+EXEC
+```
+
+### Aborting Transactions
+
+```bash
+# Start a transaction
+MULTI
+SET key1 "value1"
+SET key2 "value2"
+
+# Decide not to execute
+DISCARD
+
+# Nothing was changed
+GET key1
+# Response: (nil)
+```

@@ -1,0 +1,446 @@
+---
+title: 'Persistence'
+description: 'RDB snapshot-based persistence in ValKeyper'
+icon: 'database'
+---
+
+## Overview
+
+ValKeyper supports Redis Database (RDB) persistence, allowing you to save your in-memory dataset to disk and restore it on restart. RDB files are point-in-time snapshots of your data.
+
+## RDB File Format
+
+ValKeyper uses the standard Redis RDB binary format, which includes:
+
+- Magic string header: `REDIS`
+- Version number (4 bytes)
+- Auxiliary metadata fields
+- Database sections with key-value pairs
+- Checksum and end-of-file marker
+
+## Configuration
+
+To enable RDB persistence, specify the directory and filename when starting ValKeyper:
+
+```bash
+./your_program.sh --port 6379 --dir /var/lib/valkeyper --dbfilename dump.rdb
+```
+
+### Configuration Flags
+
+<ParamField path="--dir" type="string">
+  Directory path where the RDB file is stored
+</ParamField>
+
+<ParamField path="--dbfilename" type="string">
+  Name of the RDB file (typically `dump.rdb`)
+</ParamField>
+
+**Source:** `store.go:661-677`
+
+```go
+dir, ok1 := flags["dir"]
+dbfile, ok2 := flags["dbfilename"]
+
+if ok1 && ok2 {
+    rdb, err := rdb.NewRDB(path.Join(dir, dbfile))
+    if err == nil {
+        err = rdb.Parse()
+        if err != nil {
+            panic(err)
+        }
+        kv.LoadFromRDB(rdb)
+    }
+}
+```
+
+## RDB Loading Process
+
+When ValKeyper starts, it attempts to load an existing RDB file if both `--dir` and `--dbfilename` are provided.
+
+<Steps>
+  <Step title="Open RDB File">
+    The RDB parser opens the file and creates a buffered reader:
+    
+    ```go
+    func NewRDB(file string) (*RDB, error) {
+        fd, err := os.Open(file)
+        if err != nil {
+            return nil, err
+        }
+        return &RDB{
+            reader: bufio.NewReader(fd),
+            aux:    make(map[string]string),
+            Dbs:    make([]Database, 0),
+        }, nil
+    }
+    ```
+    
+    **Source:** `rdb/rdb.go:44-54`
+  </Step>
+  
+  <Step title="Validate Magic Header">
+    The parser verifies the file starts with "REDIS":
+    
+    ```go
+    buff := make([]byte, 5)
+    rdb.reader.Read(buff)
+    if string(buff) != "REDIS" {
+        return fmt.Errorf("not a rdb file")
+    }
+    ```
+    
+    **Source:** `rdb/rdb.go:229-233`
+  </Step>
+  
+  <Step title="Read Version">
+    Parse the 4-byte version number:
+    
+    ```go
+    rdb.reader.Read(buff[:4])
+    num, err := strconv.Atoi(string(buff[:4]))
+    rdb.version = num
+    ```
+    
+    **Source:** `rdb/rdb.go:234-239`
+  </Step>
+  
+  <Step title="Parse Auxiliary Fields">
+    Read metadata key-value pairs (opcode `0xFA`):
+    
+    ```go
+    byt, _ := rdb.reader.ReadByte()
+    flg := fmt.Sprintf("%X", byt)
+    if flg != "FA" {
+        rdb.reader.UnreadByte()
+        return fmt.Errorf("not aux")
+    }
+    key, err := rdb.ParseString()
+    val, err := rdb.ParseString()
+    rdb.aux[key] = val
+    ```
+    
+    **Source:** `rdb/rdb.go:115-132`
+  </Step>
+  
+  <Step title="Parse Database Sections">
+    Read database selectors (opcode `0xFE`) and key-value entries:
+    
+    ```go
+    func (rdb *RDB) ParseSelectDB() error {
+        byt, err := rdb.reader.ReadByte()
+        flg := fmt.Sprintf("%X", byt)
+        if flg != "FE" {
+            return fmt.Errorf("not FE")
+        }
+        dbIdx, _, err := rdb.ParseLength()
+        // ... parse hash table sizes and key-value pairs
+    }
+    ```
+    
+    **Source:** `rdb/rdb.go:135-204`
+  </Step>
+  
+  <Step title="Verify EOF Marker">
+    Confirm the file ends with `0xFF`:
+    
+    ```go
+    byt, err := rdb.reader.ReadByte()
+    flg := fmt.Sprintf("%X", byt)
+    if flg == "FF" {
+        fmt.Println("rdb file parsing complete")
+        return nil
+    }
+    ```
+    
+    **Source:** `rdb/rdb.go:259-268`
+  </Step>
+</Steps>
+
+## Data Structures
+
+### RDB Object
+
+```go
+type RDB struct {
+    reader  *bufio.Reader
+    version int
+    aux     map[string]string
+    Dbs     []Database
+}
+```
+
+**Source:** `rdb/rdb.go:26-31`
+
+### Database Object
+
+```go
+type Database struct {
+    Index       int
+    Size        int
+    Expiry      int
+    DbStore     map[string]string
+    ExpiryStore []expiryEntry
+}
+```
+
+**Source:** `rdb/rdb.go:12-18`
+
+The `DbStore` holds regular key-value pairs, while `ExpiryStore` contains keys with TTL information.
+
+### Expiry Entry
+
+```go
+type expiryEntry struct {
+    Key    string
+    Value  string
+    Expiry uint64  // Unix timestamp in milliseconds
+}
+```
+
+**Source:** `rdb/rdb.go:20-24`
+
+## Length Encoding
+
+RDB uses a special length encoding format where the first two bits determine the encoding type:
+
+```go
+func (rdb *RDB) ParseLength() (int, bool, error) {
+    firstByte, err := rdb.reader.ReadByte()
+    bitRep := fmt.Sprintf("%08b", firstByte)
+    
+    switch bitRep[:2] {
+    case "00":  // 6-bit length (0-63)
+        length = int(firstByte)
+    case "01":  // 14-bit length (0-16383)
+        nextByte, _ := rdb.reader.ReadByte()
+        lastN := firstByte & 0b00111111
+        merged := uint16(lastN)<<8 | uint16(nextByte)
+        length = int(merged)
+    case "11":  // Special format: integer encoded as string
+        isInt = true
+        // ... handle 1, 2, or 4 byte integers
+    }
+}
+```
+
+**Source:** `rdb/rdb.go:55-93`
+
+<Note>
+The `isInt` return value indicates whether the length represents an integer-encoded string.
+</Note>
+
+## String Parsing
+
+Strings in RDB files are length-prefixed:
+
+```go
+func (rdb *RDB) ParseString() (string, error) {
+    length, isInt, err := rdb.ParseLength()
+    res := make([]byte, length)
+    _, err = io.ReadFull(rdb.reader, res)
+    
+    if isInt {
+        conv, err := binary.Varint(res)
+        return strconv.Itoa(int(conv)), nil
+    }
+    return string(res), nil
+}
+```
+
+**Source:** `rdb/rdb.go:95-113`
+
+## Key-Value Parsing
+
+Regular key-value pairs use type byte `0x00` for string values:
+
+```go
+func (rdb *RDB) ParseKeyValue(dbIdx int) ([]string, error) {
+    byt, err := rdb.reader.ReadByte()
+    if byt == 0 {  // String type
+        key, err := rdb.ParseString()
+        val, err := rdb.ParseString()
+        return []string{key, val}, nil
+    }
+    return nil, fmt.Errorf("not kv string")
+}
+```
+
+**Source:** `rdb/rdb.go:206-225`
+
+## Expiry Handling
+
+Keys with expiration use the `0xFC` opcode followed by an 8-byte Unix timestamp in milliseconds:
+
+```go
+for {
+    var expiry uint64
+    var hasExp bool = false
+    byt, _ = rdb.reader.ReadByte()
+    
+    if fmt.Sprintf("%X", byt) == "FC" {
+        hasExp = true
+        buff := make([]byte, 8)
+        rdb.reader.Read(buff)
+        expiry = binary.LittleEndian.Uint64(buff)
+    }
+    
+    if hasExp {
+        rdb.Dbs[dbIdx].ExpiryStore = append(rdb.Dbs[dbIdx].ExpiryStore, 
+            expiryEntry{Key: keyval[0], Value: keyval[1], Expiry: expiry})
+    }
+}
+```
+
+**Source:** `rdb/rdb.go:170-202`
+
+## Loading Data into Memory
+
+After parsing, the RDB data is loaded into the KVStore:
+
+```go
+func (kv *KVStore) LoadFromRDB(rdb *rdb.RDB) {
+    if len(rdb.Dbs) < 1 {
+        return
+    }
+    
+    // Load regular key-value pairs
+    kv.store = rdb.Dbs[0].DbStore
+    
+    // Load keys with expiration
+    for _, x := range rdb.Dbs[0].ExpiryStore {
+        kv.store[x.Key] = x.Value
+        duration := time.Duration(int64(x.Expiry)-time.Now().UnixMilli()) * time.Millisecond
+        go kv.handleExpiry(time.After(duration), x.Key)
+    }
+}
+```
+
+**Source:** `store.go:81-92`
+
+<Warning>
+Expired keys are automatically scheduled for deletion. If the expiry time has already passed, the key will be deleted shortly after loading.
+</Warning>
+
+## RDB in Replication
+
+During replication, slaves receive an RDB snapshot from the master:
+
+```go
+func (kv *KVStore) LoadRDB(master net.Conn) {
+    parser := resp.NewParser(master)
+    byt, err := parser.ReadByte()
+    
+    if string(byt) == "$" {
+        rdbContent, _ := parser.ParseBulkString()
+        rdb, err := rdb.NewFromBytes(rdbContent)
+        if err != nil {
+            panic(err)
+        }
+        kv.LoadFromRDB(rdb)
+    }
+}
+```
+
+**Source:** `store.go:107-135`
+
+The `NewFromBytes` function creates a temporary `dump.rdb` file from the received bytes:
+
+```go
+func NewFromBytes(content []byte) (*RDB, error) {
+    file, _ := os.Create("dump.rdb")
+    file.Write(content)
+    rdb, err := NewRDB("dump.rdb")
+    return rdb, nil
+}
+```
+
+**Source:** `rdb/rdb.go:33-42`
+
+## Retrieving Persisted Configuration
+
+Use the CONFIG GET command to retrieve persistence settings:
+
+```bash
+redis-cli CONFIG GET dir
+redis-cli CONFIG GET dbfilename
+```
+
+**Source:** `store.go:229-238`
+
+```go
+case "CONFIG":
+    if len(buff) > 2 && buff[1] == "GET" {
+        key := buff[2]
+        val, ok := kv.Info.flags[key]
+        if ok {
+            res = resp.ToArray([]string{key, val})
+        }
+    }
+```
+
+## Limitations
+
+<Warning>
+ValKeyper currently only supports **loading** RDB files at startup. Automatic background saving (like Redis's BGSAVE) is not implemented.
+</Warning>
+
+<AccordionGroup>
+  <Accordion title="No Automatic Snapshots">
+    ValKeyper does not periodically save snapshots. You must create RDB files externally or during replication.
+  </Accordion>
+  
+  <Accordion title="Single Database">
+    Only database index 0 is loaded. Multiple databases in an RDB file are parsed but only the first is used.
+  </Accordion>
+  
+  <Accordion title="Limited Data Types">
+    Only string key-value pairs are fully supported. Complex types like lists, sets, and sorted sets may not load correctly.
+  </Accordion>
+</AccordionGroup>
+
+## RDB Opcodes Reference
+
+| Opcode | Hex  | Description |
+|--------|------|-------------|
+| AUX    | 0xFA | Auxiliary field (metadata) |
+| SELECTDB | 0xFE | Database selector |
+| RESIZEDB | 0xFB | Hash table size information |
+| EXPIRETIME_MS | 0xFC | Expiry time in milliseconds |
+| EOF    | 0xFF | End of RDB file |
+
+**Source:** `store.go:552` and `rdb/rdb.go`
+
+## Example Workflow
+
+```bash
+# Start ValKeyper with persistence enabled
+./your_program.sh --port 6379 --dir /data --dbfilename backup.rdb
+
+# On startup, ValKeyper will:
+# 1. Check for /data/backup.rdb
+# 2. Parse the RDB file if it exists
+# 3. Load all key-value pairs into memory
+# 4. Schedule expiration for TTL keys
+# 5. Begin accepting connections
+```
+
+## Best Practices
+
+<CardGroup cols={2}>
+  <Card title="Backup Strategy" icon="clock-rotate-left">
+    Regularly copy RDB files to backup storage. RDB provides point-in-time snapshots ideal for disaster recovery.
+  </Card>
+  
+  <Card title="Directory Permissions" icon="lock">
+    Ensure the `--dir` path has appropriate read/write permissions for the ValKeyper process.
+  </Card>
+  
+  <Card title="Disk Space" icon="hard-drive">
+    Monitor available disk space. RDB files can grow large with substantial datasets.
+  </Card>
+  
+  <Card title="Testing Restores" icon="vial">
+    Periodically test RDB file loading to verify data integrity and recovery procedures.
+  </Card>
+</CardGroup>

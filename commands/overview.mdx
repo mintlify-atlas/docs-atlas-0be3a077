@@ -1,0 +1,100 @@
+---
+title: 'Commands Overview'
+description: 'Complete reference of all supported ValKeyper commands'
+icon: 'terminal'
+---
+
+ValKeyper is a Redis-compatible in-memory key-value store that supports a comprehensive set of commands for data manipulation, key management, streams, and transactions.
+
+## Command Categories
+
+Commands are organized into the following categories based on their functionality:
+
+### String Commands
+
+String commands operate on simple key-value pairs where values are strings.
+
+- **SET** - Set the string value of a key with optional expiry
+- **GET** - Get the value of a key
+- **ECHO** - Echo the given string
+- **INCR** - Increment the integer value of a key by one
+
+[View String Commands Documentation →](/commands/string-commands)
+
+### Key Management Commands
+
+Key management commands allow you to inspect, delete, and manage keys across the store.
+
+- **DEL** - Delete a key
+- **KEYS** - Find all keys matching a pattern
+- **TYPE** - Determine the type of value stored at a key
+- **EXPIRE** - Set a key's time to live (handled via SET command)
+
+[View Key Management Documentation →](/commands/key-management)
+
+### Stream Commands
+
+Streams are append-only log data structures that support powerful blocking read operations.
+
+- **XADD** - Append a new entry to a stream
+- **XRANGE** - Return a range of elements from a stream
+- **XREAD** - Read data from one or multiple streams, with optional blocking
+
+[View Stream Commands Documentation →](/commands/stream-commands)
+
+### Transaction Commands
+
+Transactions allow you to execute multiple commands atomically.
+
+- **MULTI** - Mark the start of a transaction block
+- **EXEC** - Execute all commands issued after MULTI
+- **DISCARD** - Discard all commands issued after MULTI
+
+[View Transaction Commands Documentation →](/commands/transaction-commands)
+
+## Connection Commands
+
+- **PING** - Ping the server to check connectivity
+- **CONFIG** - Get configuration parameters
+- **INFO** - Get information and statistics about the server
+
+## Command Syntax
+
+All commands follow the Redis protocol (RESP) format. Commands are case-insensitive, though this documentation uses uppercase for clarity.
+
+### Example Usage
+
+```bash
+# Connect using redis-cli
+redis-cli -p 6379
+
+# Basic command
+SET mykey "Hello World"
+# Response: OK
+
+GET mykey
+# Response: "Hello World"
+```
+
+## Return Values
+
+Commands return different types of values:
+
+- **Simple strings** - Prefixed with `+`, e.g., `+OK`
+- **Errors** - Prefixed with `-`, e.g., `-ERR invalid command`
+- **Integers** - Prefixed with `:`, e.g., `:1`
+- **Bulk strings** - Length-prefixed strings, e.g., `$5\r\nHello\r\n`
+- **Arrays** - Collections of other types, e.g., `*2\r\n$3\r\nfoo\r\n$3\r\nbar\r\n`
+- **Null** - Represented as `$-1\r\n`
+
+## Error Handling
+
+When commands fail, ValKeyper returns error messages that describe the issue:
+
+```bash
+INCR noninteger
+# Response: -ERR value is not an integer or out of range
+
+EXEC
+# Response: -ERR EXEC without MULTI
+```

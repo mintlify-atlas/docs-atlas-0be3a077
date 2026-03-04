@@ -1,0 +1,400 @@
+---
+title: RESP Protocol
+description: How ValKeyper implements the Redis Serialization Protocol (RESP)
+---
+
+## What is RESP?
+
+RESP (Redis Serialization Protocol) is the wire protocol used by Redis and compatible systems like ValKeyper. It's a simple, human-readable protocol that's easy to implement and debug.
+
+## Parser Implementation
+
+ValKeyper's RESP parser is implemented in `app/resp/parser.go` as a wrapper around Go's `bufio.Reader`:
+
+```go
+type Parser struct {
+    *bufio.Reader
+}
+
+func NewParser(rdr io.Reader) *Parser {
+    return &Parser{
+        bufio.NewReader(rdr),
+    }
+}
+```
+
+## RESP Data Types
+
+RESP supports several data types, each indicated by the first byte:
+
+<Tabs>
+  <Tab title="Simple Strings">
+    Simple strings start with `+` and end with `\r\n`:
+
+    ```
+    +OK\r\n
+    +PONG\r\n
+    ```
+
+    ValKeyper generates these for simple responses:
+
+    ```go
+    case "PING":
+        res = []byte("+PONG\r\n")
+    ```
+  </Tab>
+
+  <Tab title="Errors">
+    Errors start with `-` and end with `\r\n`:
+
+    ```
+    -ERR unknown command\r\n
+    -ERR The ID specified in XADD must be greater than 0-0\r\n
+    ```
+
+    Used for error responses:
+
+    ```go
+    if currEntryTime < 1 && currEntrySeq < 1 {
+        res = []byte("-ERR The ID specified in XADD must be greater than 0-0\r\n")
+    }
+    ```
+  </Tab>
+
+  <Tab title="Integers">
+    Integers start with `:` and end with `\r\n`:
+
+    ```
+    :1000\r\n
+    :0\r\n
+    ```
+
+    ValKeyper provides a helper function:
+
+    ```go
+    func ToInt(num int) []byte {
+        return []byte(fmt.Sprintf(":%d\r\n", num))
+    }
+    ```
+
+    Used for numeric responses like DEL, INCR, and WAIT:
+
+    ```go
+    case "INCR":
+        // ... increment logic ...
+        res = []byte(fmt.Sprintf(":%s\r\n", kv.store[buff[1]]))
+    ```
+  </Tab>
+
+  <Tab title="Bulk Strings">
+    Bulk strings start with `$`, followed by the length, then `\r\n`, the data, and final `\r\n`:
+
+    ```
+    $5\r\nHello\r\n
+    $-1\r\n  (null)
+    ```
+
+    Parser implementation:
+
+    ```go
+    func (p *Parser) ParseBulkString() ([]byte, error) {
+        length, err := p.GetLength()
+        if err != nil {
+            return nil, err
+        }
+
+        _, err = p.ReadBytes('\n')
+        if err != nil {
+            return nil, err
+        }
+
+        res := make([]byte, length)
+        _, err = io.ReadFull(p, res)
+        if err != nil {
+            return nil, err
+        }
+
+        return res, nil
+    }
+    ```
+
+    Encoding helper:
+
+    ```go
+    func ToBulkString(ele string) string {
+        return fmt.Sprintf("$%d\r\n%s\r\n", len(ele), ele)
+    }
+    ```
+  </Tab>
+
+  <Tab title="Arrays">
+    Arrays start with `*`, followed by the number of elements:
+
+    ```
+    *2\r\n$3\r\nGET\r\n$3\r\nkey\r\n
+    ```
+
+    This represents the command `GET key` as an array of two bulk strings.
+
+    Parser implementation:
+
+    ```go
+    func (p *Parser) ParseArray() ([]string, error) {
+        length, err := p.GetLength()
+        if err != nil {
+            return nil, err
+        }
+        res := make([]string, length)
+        for i := 0; i < length; i++ {
+            _, err = p.ReadBytes('\n')
+            if err != nil {
+                return nil, err
+            }
+            iden, err := p.ReadByte()
+            if err != nil {
+                return nil, err
+            }
+
+            if string(iden) == "$" {
+                str, err := p.ParseBulkString()
+                if err != nil {
+                    return nil, err
+                }
+                res[i] = string(str)
+            }
+        }
+        _, err = p.ReadBytes('\n')
+        if err != nil {
+            return nil, err
+        }
+        return res, nil
+    }
+    ```
+
+    Encoding helper:
+
+    ```go
+    func ToArray(arr []string) []byte {
+        sb := strings.Builder{}
+        tmp := fmt.Sprintf("*%d\r\n", len(arr))
+        sb.WriteString(tmp)
+        for _, ele := range arr {
+            sb.WriteString(ToBulkString(ele))
+        }
+        return []byte(sb.String())
+    }
+    ```
+  </Tab>
+</Tabs>
+
+## Length Encoding
+
+RESP uses length-prefixed strings and arrays. ValKeyper parses lengths with:
+
+```go
+func (p *Parser) GetLength() (int, error) {
+    buff := strings.Builder{}
+    for {
+        chr, err := p.ReadByte()
+        if err != nil {
+            return -1, err
+        }
+        if chr == '\r' {
+            p.UnreadByte()
+            break
+        }
+        err = buff.WriteByte(chr)
+        if err != nil {
+            return -1, err
+        }
+    }
+    res, err := strconv.Atoi(buff.String())
+    if err != nil {
+        return -1, err
+    }
+    return res, nil
+}
+```
+
+This function:
+1. Reads bytes until it encounters `\r` (start of `\r\n` terminator)
+2. Converts the accumulated bytes to an integer
+3. Returns the length for subsequent parsing
+
+## Main Parse Function
+
+The main `Parse()` function dispatches to the appropriate parser based on the type indicator:
+
+```go
+func (p *Parser) Parse() ([]string, error) {
+    iden, err := p.ReadByte()
+    if err != nil {
+        return nil, err
+    }
+    res := []string{}
+    switch string(iden) {
+    case "*":
+        res, err = p.ParseArray()
+        if err != nil {
+            return nil, err
+        }
+    case "$": // This case reads rdb after handshake
+        buff, err := p.ParseBulkString()
+        if err != nil {
+            return nil, err
+        }
+        fmt.Println(string(buff))
+    default:
+        fmt.Printf("got %s\n", string(iden))
+    }
+    return res, nil
+}
+```
+
+<Note>
+  ValKeyper primarily receives arrays of bulk strings from clients (commands and arguments), so the array parser is the most commonly used code path.
+</Note>
+
+## Real-World Example
+
+Let's trace how a `SET key value` command flows through the parser:
+
+<Steps>
+  <Step title="Client sends">
+    ```
+    *3\r\n$3\r\nSET\r\n$3\r\nkey\r\n$5\r\nvalue\r\n
+    ```
+  </Step>
+
+  <Step title="Parse() reads '*'">
+    Dispatches to `ParseArray()`
+  </Step>
+
+  <Step title="GetLength() reads '3'">
+    Array has 3 elements
+  </Step>
+
+  <Step title="Parse each element">
+    - Reads `$`, calls `ParseBulkString()`
+    - `GetLength()` returns 3
+    - Reads "SET" into result[0]
+    - Repeats for "key" and "value"
+  </Step>
+
+  <Step title="Returns []string">
+    ```go
+    []string{"SET", "key", "value"}
+    ```
+  </Step>
+</Steps>
+
+## Response Formatting
+
+ValKeyper uses helper functions to format responses:
+
+<CodeGroup>
+
+```go Response Helpers
+// Simple string response
+res = []byte("+OK\r\n")
+
+// Error response
+res = []byte("-ERR unknown command\r\n")
+
+// Integer response
+res = resp.ToInt(42)  // ":42\r\n"
+
+// Bulk string response
+res = []byte(resp.ToBulkString("Hello"))  // "$5\r\nHello\r\n"
+
+// Array response
+res = resp.ToArray([]string{"key", "value"})  
+// "*2\r\n$3\r\nkey\r\n$5\r\nvalue\r\n"
+```
+
+```go Example: GET Command
+case "GET":
+    key := buff[1]
+    val, ok := kv.store[key]
+    if !ok {
+        res = []byte("$-1\r\n")  // null bulk string
+    } else {
+        res = []byte(fmt.Sprintf("$%d\r\n%s\r\n", len(val), val))
+    }
+```
+
+</CodeGroup>
+
+## Special Case: RDB Transfer
+
+During replication, the master sends an RDB snapshot as a bulk string:
+
+```go
+case "PSYNC":
+    res = []byte(fmt.Sprintf("+FULLRESYNC %s %d\r\n", 
+        kv.Info.MasterReplId, kv.Info.MasterReplOffSet))
+
+    rdbFile, err := hex.DecodeString("524544495330303131...")
+    if err != nil {
+        panic(err)
+    }
+
+    // Send as bulk string
+    tmp := append([]byte(fmt.Sprintf("$%d\r\n", len(rdbFile))), rdbFile...)
+    res = append(res, tmp...)
+```
+
+The slave uses `ParseBulkString()` to receive the RDB data:
+
+```go
+if string(byt) == "$" {
+    rdbContent, _ := parser.ParseBulkString()
+    rdb, err := rdb.NewFromBytes(rdbContent)
+    // ... load data from RDB ...
+}
+```
+
+## Protocol Efficiency
+
+<CardGroup cols={2}>
+  <Card title="Human Readable" icon="eye">
+    Easy to debug with telnet or netcat
+  </Card>
+  <Card title="Simple to Parse" icon="code">
+    No complex state machines or backtracking
+  </Card>
+  <Card title="Binary Safe" icon="shield">
+    Bulk strings can contain any binary data
+  </Card>
+  <Card title="Compact" icon="compress">
+    Minimal overhead with length prefixes
+  </Card>
+</CardGroup>
+
+<Tip>
+  You can test RESP directly using telnet:
+  
+  ```bash
+  $ telnet localhost 6379
+  *1\r\n$4\r\nPING\r\n
+  +PONG
+  ```
+</Tip>
+
+## Mixed-Type Arrays
+
+ValKeyper also supports `ToArrayAnyType()` for arrays containing different RESP types:
+
+```go
+func ToArrayAnyType(arr []string) []byte {
+    sb := strings.Builder{}
+    tmp := fmt.Sprintf("*%d\r\n", len(arr))
+    sb.WriteString(tmp)
+    for _, ele := range arr {
+        sb.WriteString(ele)  // Elements already formatted
+    }
+    return []byte(sb.String())
+}
+```
+
+This is used for complex responses like `XRANGE` where each element is itself a formatted array or bulk string.

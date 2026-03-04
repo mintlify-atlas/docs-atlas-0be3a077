@@ -1,0 +1,362 @@
+---
+title: "resp"
+description: "RESP (REdis Serialization Protocol) parser package"
+---
+
+The `resp` package implements parsing and encoding for the Redis Serialization Protocol (RESP), enabling communication between clients and the ValKeyper server.
+
+## Parser
+
+The RESP protocol parser built on top of `bufio.Reader`.
+
+```go
+type Parser struct {
+    *bufio.Reader
+}
+```
+
+### NewParser
+
+Creates a new RESP parser from an io.Reader.
+
+```go
+func NewParser(rdr io.Reader) *Parser
+```
+
+<ParamField path="rdr" type="io.Reader" required>
+  The underlying reader (typically a network connection)
+</ParamField>
+
+<ResponseField name="return" type="*Parser">
+  A new Parser instance wrapping the reader
+</ResponseField>
+
+**Example:**
+
+```go
+conn, _ := net.Dial("tcp", "localhost:6379")
+parser := resp.NewParser(conn)
+```
+
+### Parse
+
+Parses the next RESP-encoded command or data from the stream.
+
+```go
+func (p *Parser) Parse() ([]string, error)
+```
+
+<ResponseField name="return" type="[]string">
+  Array of parsed strings (command and arguments)
+</ResponseField>
+
+<ResponseField name="error" type="error">
+  Error if parsing fails or EOF is reached
+</ResponseField>
+
+**Supported RESP Types:**
+
+- Arrays (`*`) - Parsed into string slices
+- Bulk Strings (`$`) - Parsed into string elements
+
+**Example:**
+
+```go
+parser := resp.NewParser(conn)
+command, err := parser.Parse()
+if err != nil {
+    log.Fatal(err)
+}
+// command might be: ["SET", "key", "value"]
+```
+
+### ParseArray
+
+Parses a RESP array into a slice of strings.
+
+```go
+func (p *Parser) ParseArray() ([]string, error)
+```
+
+<ResponseField name="return" type="[]string">
+  Array elements as strings
+</ResponseField>
+
+<ResponseField name="error" type="error">
+  Error if the array format is invalid
+</ResponseField>
+
+**RESP Format:**
+
+```
+*3\r\n$3\r\nSET\r\n$3\r\nkey\r\n$5\r\nvalue\r\n
+```
+
+**Example:**
+
+```go
+// Assuming parser is positioned after reading '*'
+array, err := parser.ParseArray()
+// Returns: ["SET", "key", "value"]
+```
+
+### ParseBulkString
+
+Parses a RESP bulk string into a byte slice.
+
+```go
+func (p *Parser) ParseBulkString() ([]byte, error)
+```
+
+<ResponseField name="return" type="[]byte">
+  The parsed bulk string as bytes
+</ResponseField>
+
+<ResponseField name="error" type="error">
+  Error if the bulk string format is invalid
+</ResponseField>
+
+**RESP Format:**
+
+```
+$6\r\nfoobar\r\n
+```
+
+**Example:**
+
+```go
+// Assuming parser is positioned after reading '$'
+data, err := parser.ParseBulkString()
+// Returns: []byte("foobar")
+```
+
+### GetLength
+
+Reads a length-encoded integer from the stream.
+
+```go
+func (p *Parser) GetLength() (int, error)
+```
+
+<ResponseField name="return" type="int">
+  The parsed length value
+</ResponseField>
+
+<ResponseField name="error" type="error">
+  Error if the length cannot be parsed
+</ResponseField>
+
+**Example:**
+
+```go
+// Reading "$5\r\nhello\r\n"
+length, _ := parser.GetLength() // Returns: 5
+```
+
+## Encoding Functions
+
+Functions to encode Go data structures into RESP format.
+
+### ToBulkString
+
+Encodes a string as a RESP bulk string.
+
+```go
+func ToBulkString(ele string) string
+```
+
+<ParamField path="ele" type="string" required>
+  The string to encode
+</ParamField>
+
+<ResponseField name="return" type="string">
+  RESP-encoded bulk string
+</ResponseField>
+
+**Example:**
+
+```go
+encoded := resp.ToBulkString("hello")
+// Returns: "$5\r\nhello\r\n"
+```
+
+### ToArray
+
+Encodes a string slice as a RESP array of bulk strings.
+
+```go
+func ToArray(arr []string) []byte
+```
+
+<ParamField path="arr" type="[]string" required>
+  The string slice to encode
+</ParamField>
+
+<ResponseField name="return" type="[]byte">
+  RESP-encoded array as bytes
+</ResponseField>
+
+**Example:**
+
+```go
+command := []string{"SET", "key", "value"}
+encoded := resp.ToArray(command)
+// Returns: "*3\r\n$3\r\nSET\r\n$3\r\nkey\r\n$5\r\nvalue\r\n"
+```
+
+### ToArrayAnyType
+
+Encodes an array where elements are already RESP-encoded.
+
+```go
+func ToArrayAnyType(arr []string) []byte
+```
+
+<ParamField path="arr" type="[]string" required>
+  Array of pre-encoded RESP strings
+</ParamField>
+
+<ResponseField name="return" type="[]byte">
+  RESP-encoded array as bytes
+</ResponseField>
+
+**Example:**
+
+```go
+elements := []string{
+    resp.ToBulkString("key1"),
+    resp.ToBulkString("value1"),
+}
+encoded := resp.ToArrayAnyType(elements)
+```
+
+### ToInt
+
+Encodes an integer as a RESP integer.
+
+```go
+func ToInt(num int) []byte
+```
+
+<ParamField path="num" type="int" required>
+  The integer to encode
+</ParamField>
+
+<ResponseField name="return" type="[]byte">
+  RESP-encoded integer
+</ResponseField>
+
+**Example:**
+
+```go
+encoded := resp.ToInt(42)
+// Returns: ":42\r\n"
+```
+
+## Config
+
+Configuration file parser (separate from RESP protocol).
+
+<ParamField path="File" type="string">
+  Path to the configuration file
+</ParamField>
+
+<ParamField path="Pair" type="map[string]string">
+  Parsed configuration key-value pairs
+</ParamField>
+
+### NewConfig
+
+Creates a new configuration parser.
+
+```go
+func NewConfig(file string) *Config
+```
+
+<ParamField path="file" type="string" required>
+  Path to the configuration file
+</ParamField>
+
+**Example:**
+
+```go
+config := resp.NewConfig("/etc/redis/redis.conf")
+config.Marshal()
+port := config.Pair["port"]
+```
+
+## Complete Example
+
+Here's a complete example showing parsing and encoding:
+
+```go
+package main
+
+import (
+    "fmt"
+    "net"
+    "github.com/codecrafters-io/redis-starter-go/app/resp"
+)
+
+func handleClient(conn net.Conn) {
+    defer conn.Close()
+    parser := resp.NewParser(conn)
+    
+    // Parse incoming command
+    command, err := parser.Parse()
+    if err != nil {
+        return
+    }
+    
+    // Process command
+    switch command[0] {
+    case "PING":
+        // Send simple string response
+        conn.Write([]byte("+PONG\r\n"))
+        
+    case "ECHO":
+        // Echo back the message
+        response := resp.ToBulkString(command[1])
+        conn.Write([]byte(response))
+        
+    case "GET":
+        // Return a value
+        value := "example-value"
+        response := resp.ToBulkString(value)
+        conn.Write([]byte(response))
+        
+    case "SET":
+        // Acknowledge the set
+        conn.Write([]byte("+OK\r\n"))
+        
+    case "KEYS":
+        // Return array of keys
+        keys := []string{"key1", "key2", "key3"}
+        response := resp.ToArray(keys)
+        conn.Write(response)
+    }
+}
+
+func main() {
+    listener, _ := net.Listen("tcp", ":6379")
+    defer listener.Close()
+    
+    for {
+        conn, _ := listener.Accept()
+        go handleClient(conn)
+    }
+}
+```
+
+## RESP Protocol Reference
+
+The parser handles these RESP data types:
+
+| Type | First Byte | Example |
+|------|------------|----------|
+| Simple String | `+` | `+OK\r\n` |
+| Error | `-` | `-ERR unknown command\r\n` |
+| Integer | `:` | `:1000\r\n` |
+| Bulk String | `$` | `$5\r\nhello\r\n` |
+| Array | `*` | `*2\r\n$3\r\nfoo\r\n$3\r\nbar\r\n` |
+| Null | `$` | `$-1\r\n` |

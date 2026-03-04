@@ -1,0 +1,441 @@
+---
+title: "rdb"
+description: "RDB (Redis Database) file parser package"
+---
+
+The `rdb` package provides functionality for parsing Redis RDB (Redis Database) snapshot files, enabling persistence and data recovery in ValKeyper.
+
+## RDB
+
+The main RDB file parser structure.
+
+<ParamField path="reader" type="*bufio.Reader">
+  Buffered reader for the RDB file
+</ParamField>
+
+<ParamField path="version" type="int">
+  RDB file format version
+</ParamField>
+
+<ParamField path="aux" type="map[string]string">
+  Auxiliary metadata fields (redis-ver, redis-bits, etc.)
+</ParamField>
+
+<ParamField path="Dbs" type="[]Database">
+  Array of parsed database sections
+</ParamField>
+
+### NewRDB
+
+Creates a new RDB parser from a file path.
+
+```go
+func NewRDB(file string) (*RDB, error)
+```
+
+<ParamField path="file" type="string" required>
+  Path to the RDB file
+</ParamField>
+
+<ResponseField name="return" type="*RDB">
+  A new RDB parser instance
+</ResponseField>
+
+<ResponseField name="error" type="error">
+  Error if the file cannot be opened
+</ResponseField>
+
+**Example:**
+
+```go
+rdbFile, err := rdb.NewRDB("/var/lib/redis/dump.rdb")
+if err != nil {
+    log.Fatal(err)
+}
+```
+
+### NewFromBytes
+
+Creates an RDB parser from a byte slice (typically received during replication).
+
+```go
+func NewFromBytes(content []byte) (*RDB, error)
+```
+
+<ParamField path="content" type="[]byte" required>
+  Raw RDB file content
+</ParamField>
+
+<ResponseField name="return" type="*RDB">
+  A new RDB parser instance
+</ResponseField>
+
+<ResponseField name="error" type="error">
+  Error if the content cannot be processed
+</ResponseField>
+
+**Example:**
+
+```go
+// During replication handshake
+rdbContent, _ := parser.ParseBulkString()
+rdbFile, err := rdb.NewFromBytes(rdbContent)
+```
+
+### Parse
+
+Parses the entire RDB file structure.
+
+```go
+func (rdb *RDB) Parse() error
+```
+
+<ResponseField name="error" type="error">
+  Error if the RDB format is invalid or parsing fails
+</ResponseField>
+
+**Parsing Steps:**
+
+1. Validates the `REDIS` magic string
+2. Reads the version number
+3. Parses auxiliary metadata fields
+4. Parses database sections
+5. Validates the EOF marker (`0xFF`)
+
+**Example:**
+
+```go
+rdbFile, _ := rdb.NewRDB("dump.rdb")
+err := rdbFile.Parse()
+if err != nil {
+    log.Fatal("Invalid RDB file:", err)
+}
+
+// Access parsed data
+for _, db := range rdbFile.Dbs {
+    fmt.Printf("Database %d has %d keys\n", db.Index, db.Size)
+}
+```
+
+### ParseLength
+
+Parses a length-encoded value from the RDB file.
+
+```go
+func (rdb *RDB) ParseLength() (int, bool, error)
+```
+
+<ResponseField name="length" type="int">
+  The parsed length value
+</ResponseField>
+
+<ResponseField name="isInt" type="bool">
+  True if the value represents an encoded integer, false for a length
+</ResponseField>
+
+<ResponseField name="error" type="error">
+  Error if parsing fails
+</ResponseField>
+
+**Length Encoding:**
+
+- `00xxxxxx` - 6-bit length (0-63)
+- `01xxxxxx` - 14-bit length (next byte contains lower 8 bits)
+- `11000000` - Next 1 byte is an integer
+- `11000001` - Next 2 bytes are an integer
+- `11000010` - Next 4 bytes are an integer
+
+**Example:**
+
+```go
+length, isInt, err := rdb.ParseLength()
+if isInt {
+    fmt.Printf("Encoded integer of size: %d bytes\n", length)
+} else {
+    fmt.Printf("Length: %d\n", length)
+}
+```
+
+### ParseString
+
+Parses a string value from the RDB file.
+
+```go
+func (rdb *RDB) ParseString() (string, error)
+```
+
+<ResponseField name="return" type="string">
+  The parsed string value
+</ResponseField>
+
+<ResponseField name="error" type="error">
+  Error if parsing fails
+</ResponseField>
+
+**Handles:**
+
+- Length-prefixed strings
+- Encoded integers
+- Compressed strings
+
+**Example:**
+
+```go
+key, err := rdb.ParseString()
+if err != nil {
+    log.Fatal(err)
+}
+value, err := rdb.ParseString()
+```
+
+### ParseSelectDB
+
+Parses a database section from the RDB file.
+
+```go
+func (rdb *RDB) ParseSelectDB() error
+```
+
+<ResponseField name="error" type="error">
+  Error if the database section is invalid
+</ResponseField>
+
+**Database Section Structure:**
+
+1. `0xFE` - Database selector opcode
+2. Database index (length-encoded)
+3. `0xFB` - Hash table size info opcode
+4. Database size (length-encoded)
+5. Expiry size (length-encoded)
+6. Key-value pairs (with optional expiry)
+
+**Example:**
+
+```go
+err := rdb.ParseSelectDB()
+if err != nil {
+    if err.Error() == "not FE" {
+        // Not a database section, move on
+    }
+}
+```
+
+### ParseKeyValue
+
+Parses a single key-value pair from the RDB file.
+
+```go
+func (rdb *RDB) ParseKeyValue(dbIdx int) ([]string, error)
+```
+
+<ParamField path="dbIdx" type="int" required>
+  Index of the database being parsed
+</ParamField>
+
+<ResponseField name="return" type="[]string">
+  Two-element slice containing [key, value]
+</ResponseField>
+
+<ResponseField name="error" type="error">
+  Error if parsing fails or value type is unsupported
+</ResponseField>
+
+**Example:**
+
+```go
+keyValue, err := rdb.ParseKeyValue(0)
+if err == nil {
+    key := keyValue[0]
+    value := keyValue[1]
+    fmt.Printf("%s = %s\n", key, value)
+}
+```
+
+### ParseAux
+
+Parses auxiliary metadata fields from the RDB file.
+
+```go
+func (rdb *RDB) ParseAux() error
+```
+
+<ResponseField name="error" type="error">
+  Error if not an auxiliary field or parsing fails
+</ResponseField>
+
+**Common Auxiliary Fields:**
+
+- `redis-ver` - Redis version
+- `redis-bits` - Architecture (32 or 64 bit)
+- `ctime` - Creation timestamp
+- `used-mem` - Memory usage
+
+**Example:**
+
+```go
+for {
+    err := rdb.ParseAux()
+    if err != nil && err.Error() == "not aux" {
+        break // No more auxiliary fields
+    }
+}
+
+version := rdb.aux["redis-ver"]
+fmt.Printf("RDB created by Redis %s\n", version)
+```
+
+## Database
+
+Represents a parsed database section from the RDB file.
+
+<ParamField path="Index" type="int">
+  Database index (0-15 by default)
+</ParamField>
+
+<ParamField path="Size" type="int">
+  Number of keys in the database
+</ParamField>
+
+<ParamField path="Expiry" type="int">
+  Number of keys with expiration set
+</ParamField>
+
+<ParamField path="DbStore" type="map[string]string">
+  Key-value pairs without expiration
+</ParamField>
+
+<ParamField path="ExpiryStore" type="[]expiryEntry">
+  Key-value pairs with expiration timestamps
+</ParamField>
+
+**Example:**
+
+```go
+for _, db := range rdbFile.Dbs {
+    fmt.Printf("Database %d:\n", db.Index)
+    fmt.Printf("  Total keys: %d\n", db.Size)
+    fmt.Printf("  Keys with expiry: %d\n", db.Expiry)
+    
+    // Regular keys
+    for key, value := range db.DbStore {
+        fmt.Printf("  %s = %s\n", key, value)
+    }
+    
+    // Keys with expiration
+    for _, entry := range db.ExpiryStore {
+        fmt.Printf("  %s = %s (expires: %d)\n", 
+            entry.Key, entry.Value, entry.Expiry)
+    }
+}
+```
+
+## expiryEntry
+
+Internal structure for keys with expiration.
+
+<ParamField path="Key" type="string">
+  The key name
+</ParamField>
+
+<ParamField path="Value" type="string">
+  The key value
+</ParamField>
+
+<ParamField path="Expiry" type="uint64">
+  Unix timestamp in milliseconds when the key expires
+</ParamField>
+
+## Complete Example
+
+Here's how to parse an RDB file and load it into the store:
+
+```go
+package main
+
+import (
+    "fmt"
+    "log"
+    "time"
+    
+    "github.com/codecrafters-io/redis-starter-go/app/rdb"
+    "github.com/codecrafters-io/redis-starter-go/app/store"
+)
+
+func main() {
+    // Create a new store
+    kvStore := store.New()
+    
+    // Parse the RDB file
+    rdbFile, err := rdb.NewRDB("/var/lib/redis/dump.rdb")
+    if err != nil {
+        log.Fatal("Failed to open RDB file:", err)
+    }
+    
+    err = rdbFile.Parse()
+    if err != nil {
+        log.Fatal("Failed to parse RDB file:", err)
+    }
+    
+    // Load data into store
+    kvStore.LoadFromRDB(rdbFile)
+    
+    // Display loaded data
+    fmt.Println("Loaded RDB file successfully")
+    fmt.Printf("RDB Version: %d\n", rdbFile.version)
+    fmt.Printf("Redis Version: %s\n", rdbFile.aux["redis-ver"])
+    
+    for _, db := range rdbFile.Dbs {
+        fmt.Printf("\nDatabase %d:\n", db.Index)
+        fmt.Printf("  Total keys: %d\n", db.Size)
+        
+        // Show regular keys
+        for key, value := range db.DbStore {
+            fmt.Printf("  [PERSIST] %s = %s\n", key, value)
+        }
+        
+        // Show keys with expiration
+        now := time.Now().UnixMilli()
+        for _, entry := range db.ExpiryStore {
+            remaining := int64(entry.Expiry) - now
+            if remaining > 0 {
+                fmt.Printf("  [EXPIRE]  %s = %s (in %dms)\n", 
+                    entry.Key, entry.Value, remaining)
+            } else {
+                fmt.Printf("  [EXPIRED] %s = %s\n", 
+                    entry.Key, entry.Value)
+            }
+        }
+    }
+}
+```
+
+## RDB File Format
+
+The parser handles the standard RDB file format:
+
+```
+52 45 44 49 53              # Magic string "REDIS"
+30 30 30 33                 # Version "0003"
+FA                          # Auxiliary field opcode
+  ...                       # Key-value metadata
+FE 00                       # Select DB 0
+FB                          # Hash table sizes
+  ...                       # Size info
+FC                          # Expiry in milliseconds (optional)
+  ...                       # 8-byte timestamp
+00                          # String type
+  ...                       # Key-value pair
+FF                          # EOF opcode
+  ...                       # 8-byte checksum
+```
+
+## Opcodes Reference
+
+| Opcode | Hex | Description |
+|--------|-----|-------------|
+| EOF | `0xFF` | End of file marker |
+| SELECTDB | `0xFE` | Database selector |
+| EXPIRETIME | `0xFD` | Expiry in seconds |
+| EXPIRETIMEMS | `0xFC` | Expiry in milliseconds |
+| RESIZEDB | `0xFB` | Hash table size info |
+| AUX | `0xFA` | Auxiliary metadata |

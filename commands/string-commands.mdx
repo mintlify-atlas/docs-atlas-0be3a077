@@ -1,0 +1,274 @@
+---
+title: 'String Commands'
+description: 'Commands for managing string values in ValKeyper'
+icon: 'text'
+---
+
+String commands operate on the most basic ValKeyper data type: strings. A string value can be any sequence of bytes, up to 512 MB in length.
+
+## SET
+
+Set the string value of a key. If the key already holds a value, it is overwritten.
+
+### Syntax
+
+```bash
+SET key value [PX milliseconds]
+```
+
+### Parameters
+
+<ParamField path="key" type="string" required>
+  The key to set
+</ParamField>
+
+<ParamField path="value" type="string" required>
+  The value to store
+</ParamField>
+
+<ParamField path="PX milliseconds" type="integer">
+  Set the specified expire time, in milliseconds. When provided with the `PX` flag, the key will automatically be deleted after the specified duration.
+</ParamField>
+
+### Return Value
+
+Simple string reply: `OK` if SET was executed correctly.
+
+### Examples
+
+```bash
+# Set a simple key-value pair
+SET mykey "Hello"
+# Response: OK
+
+# Set a key with expiration (1000ms = 1 second)
+SET tempkey "temporary value" PX 1000
+# Response: OK
+# After 1 second, the key will be automatically deleted
+
+# Overwrite an existing key
+SET mykey "New Value"
+# Response: OK
+```
+
+### Implementation Details
+
+From `store.go:209-220`:
+
+```go
+case "SET":
+    key := buff[1]
+    val := buff[2]
+    ex := -1
+    if len(buff) > 4 {
+        ex, err = strconv.Atoi(buff[4])
+        if err != nil {
+            panic(err)
+        }
+    }
+    kv.Set(key, val, ex)
+    res = []byte("+OK\r\n")
+```
+
+When expiry is set (`ex != -1`), a goroutine is spawned to handle automatic key deletion after the specified duration.
+
+---
+
+## GET
+
+Get the string value of a key. If the key does not exist, the special value `nil` is returned.
+
+### Syntax
+
+```bash
+GET key
+```
+
+### Parameters
+
+<ParamField path="key" type="string" required>
+  The key to retrieve
+</ParamField>
+
+### Return Value
+
+- **Bulk string reply**: The value of the key
+- **Null reply**: `nil` if the key does not exist
+
+### Examples
+
+```bash
+# Get an existing key
+SET mykey "Hello"
+GET mykey
+# Response: "Hello"
+
+# Get a non-existent key
+GET nonexistent
+# Response: (nil)
+
+# Get a key that has expired
+SET tempkey "value" PX 100
+# Wait 200ms
+GET tempkey
+# Response: (nil)
+```
+
+### Implementation Details
+
+From `store.go:221-228`:
+
+```go
+case "GET":
+    key := buff[1]
+    val, ok := kv.store[key]
+    if !ok {
+        res = []byte("$-1\r\n")
+    } else {
+        res = []byte(fmt.Sprintf("$%d\r\n%s\r\n", len(val), val))
+    }
+```
+
+---
+
+## ECHO
+
+Returns the provided message. Useful for testing connectivity and verifying the server is responding.
+
+### Syntax
+
+```bash
+ECHO message
+```
+
+### Parameters
+
+<ParamField path="message" type="string" required>
+  The message to echo back
+</ParamField>
+
+### Return Value
+
+Bulk string reply: The provided message.
+
+### Examples
+
+```bash
+ECHO "Hello World"
+# Response: "Hello World"
+
+ECHO "Testing connection"
+# Response: "Testing connection"
+```
+
+### Implementation Details
+
+From `store.go:190-192`:
+
+```go
+case "ECHO":
+    msg := buff[1]
+    res = []byte(fmt.Sprintf("$%d\r\n%s\r\n", len(msg), msg))
+```
+
+---
+
+## INCR
+
+Increments the integer value of a key by one. If the key does not exist, it is set to `0` before performing the operation.
+
+### Syntax
+
+```bash
+INCR key
+```
+
+### Parameters
+
+<ParamField path="key" type="string" required>
+  The key to increment
+</ParamField>
+
+### Return Value
+
+Integer reply: The value of the key after the increment.
+
+### Errors
+
+- Returns an error if the key contains a value of the wrong type or contains a string that cannot be represented as an integer.
+
+### Examples
+
+```bash
+# Increment a non-existent key (initialized to 0)
+INCR counter
+# Response: 1
+
+INCR counter
+# Response: 2
+
+INCR counter
+# Response: 3
+
+# Set an initial value
+SET mycounter "10"
+INCR mycounter
+# Response: 11
+
+# Error: non-integer value
+SET mystring "hello"
+INCR mystring
+# Response: -ERR value is not an integer or out of range
+```
+
+### Implementation Details
+
+From `store.go:507-521`:
+
+```go
+case "INCR":
+    v, ok := kv.store[buff[1]]
+    if !ok {
+        kv.store[buff[1]] = "1"
+    } else {
+        val, err := strconv.Atoi(v)
+        if err == nil {
+            kv.store[buff[1]] = fmt.Sprintf("%d", val+1)
+        } else {
+            res = []byte("-ERR value is not an integer or out of range\r\n")
+            break
+        }
+    }
+    res = []byte(fmt.Sprintf(":%s\r\n", kv.store[buff[1]]))
+```
+
+## Use Cases
+
+### Caching
+
+```bash
+# Cache a user session
+SET session:user123 "{\"userId\": 123, \"name\": \"John\"}" PX 3600000
+GET session:user123
+```
+
+### Counters
+
+```bash
+# Page view counter
+INCR page:views:homepage
+INCR page:views:homepage
+GET page:views:homepage
+# Response: 2
+```
+
+### Rate Limiting
+
+```bash
+# Track API calls with 60-second window
+SET rate:user123 "0" PX 60000
+INCR rate:user123
+INCR rate:user123
+GET rate:user123
+# Response: 2
+```
