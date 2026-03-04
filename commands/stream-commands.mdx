@@ -171,13 +171,17 @@ Read data from one or multiple streams, optionally blocking until new data arriv
 ### Syntax
 
 ```bash
-XREAD [BLOCK milliseconds] STREAMS key [key ...] ID [ID ...]
+XREAD [block milliseconds] STREAMS key [key ...] ID [ID ...]
 ```
+
+<Warning>
+  The `block` keyword must be lowercase. The implementation checks for lowercase `"block"` specifically.
+</Warning>
 
 ### Parameters
 
-<ParamField path="BLOCK milliseconds" type="integer">
-  Block for the specified number of milliseconds if no data is available. Use `0` to block indefinitely until new data arrives.
+<ParamField path="block milliseconds" type="integer">
+  Block for the specified number of milliseconds if no data is available. Use `0` to block indefinitely until new data arrives. Must be lowercase.
 </ParamField>
 
 <ParamField path="key" type="string" required>
@@ -219,7 +223,7 @@ XREAD STREAMS mystream 1234567890000-0
 # Response: (only the second entry)
 
 # Block for 1 second waiting for new data
-XREAD BLOCK 1000 STREAMS mystream $
+XREAD block 1000 STREAMS mystream $
 # If no data arrives in 1 second:
 # Response: (nil)
 
@@ -228,17 +232,17 @@ XADD mystream * field3 value3
 # The blocked XREAD immediately returns the new entry
 
 # Block indefinitely (0 = wait forever)
-XREAD BLOCK 0 STREAMS mystream $
+XREAD block 0 STREAMS mystream $
 # Waits until new data is added with XADD
 ```
 
 ### Blocking Behavior
 
-When using the `BLOCK` option:
+When using the `block` option:
 
-- **With timeout** (`BLOCK 1000`): Waits up to the specified milliseconds for new data
-- **Without timeout** (`BLOCK 0`): Waits indefinitely until new data arrives
-- **Non-blocking** (no `BLOCK`): Returns immediately with available data
+- **With timeout** (`block 1000`): Waits up to the specified milliseconds for new data
+- **Without timeout** (`block 0`): Waits indefinitely until new data arrives
+- **Non-blocking** (no `block`): Returns immediately with available data
 
 ### Implementation Details
 
@@ -284,7 +288,7 @@ XRANGE app:events 1234567890000-0 1234567899999-0
 
 ```bash
 # Monitor sensor data with blocking
-XREAD BLOCK 0 STREAMS sensors:temperature $
+XREAD block 0 STREAMS sensors:temperature $
 
 # In another connection:
 XADD sensors:temperature * celsius 22.5 location "room-1"
@@ -299,11 +303,11 @@ XADD tasks * type "email" recipient "user@example.com" priority "high"
 XADD tasks * type "sms" recipient "+1234567890" priority "normal"
 
 # Consumer processes tasks
-XREAD BLOCK 5000 STREAMS tasks 0-0
+XREAD block 5000 STREAMS tasks 0-0
 # Process each task...
 
 # Continue from last processed ID
-XREAD BLOCK 5000 STREAMS tasks 1234567890001-0
+XREAD block 5000 STREAMS tasks 1234567890001-0
 ```
 
 ### Time Series Data
@@ -318,5 +322,5 @@ XADD metrics:cpu * usage 38.7 cores 4
 XRANGE metrics:cpu - +
 
 # Monitor new metrics in real-time
-XREAD BLOCK 0 STREAMS metrics:cpu $
+XREAD block 0 STREAMS metrics:cpu $
 ```
